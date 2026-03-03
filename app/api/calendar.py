@@ -1,0 +1,121 @@
+import os
+import datetime
+from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import RedirectResponse
+from sqlalchemy.orm import Session
+from google_auth_oauthlib.flow import Flow
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
+from app.db.base import get_db
+from app.db.models import WhatsAppBotConfig
+from app.core.config import settings
+
+router = APIRouter()
+
+# If testing locally, allow insecure HTTP for OAuth
+if settings.DEBUG:
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+
+def _get_flow():
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(status_code=500, detail="Google credentials not configured.")
+        
+    client_config = {
+        "web": {
+            "client_id": settings.GOOGLE_CLIENT_ID,
+            "project_id": "nexus-calendar",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_secret": settings.GOOGLE_CLIENT_SECRET,
+            "redirect_uris": ["http://localhost:8001/api/v1/calendar/callback"]
+        }
+    }
+    
+    flow = Flow.from_client_config(
+        client_config, 
+        scopes=SCOPES,
+        redirect_uri="http://localhost:8001/api/v1/calendar/callback"
+    )
+    return flow
+
+
+@router.get("/connect/{bot_config_id}")
+async def connect_calendar(bot_config_id: str):
+    """
+    Step 1: The merchant clicks 'Connect Google Calendar' on the dashboard.
+    We redirect them to the Google Accounts consent screen.
+    We pass their bot_config_id in the 'state' parameter so we know who they are when they return.
+    """
+    flow = _get_flow()
+    authorization_url, state = flow.authorization_url(
+        access_type="offline", # Need offline access to get a refresh token
+        prompt="consent",      # Force consent screen to guarantee refresh token is given
+        state=bot_config_id    # Pass ID back and forth
+    )
+    return RedirectResponse(url=authorization_url)
+
+
+@router.get("/callback")
+async def calendar_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    Step 2: Google redirects here with an authorization code.
+    We exchange the code for a permanent access/refresh token, and save it to the DB.
+    """
+    code = request.query_params.get("code")
+    state = request.query_params.get("state") # This is the bot_config_id
+    
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing code or state")
+        
+    config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == state).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="Bot config not found")
+
+    flow = _get_flow()
+    try:
+        # Provide the full url from the request so oauthlib can verify the state
+        flow.fetch_token(authorization_response=str(request.url))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to fetch token: {str(e)}")
+
+    creds = flow.credentials
+    
+    # Save token payload to PostgreSQL
+    config.google_calendar_token = {
+        "token": creds.token,
+        "refresh_token": creds.refresh_token,
+        "token_uri": creds.token_uri,
+        "client_id": creds.client_id,
+        "client_secret": creds.client_secret,
+        "scopes": creds.scopes
+    }
+    db.commit()
+
+    return {"message": "Google Calendar connected successfully! You can close this tab."}
+
+
+def get_calendar_service(db: Session, bot_config_id: str):
+    """
+    Step 3: Internal helper function.
+    Given a bot_config_id, returns a working Google Calendar API client.
+    Automatically uses the refresh token if the current token is expired.
+    """
+    config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id).first()
+    if not config or not config.google_calendar_token:
+        return None
+        
+    token_data = config.google_calendar_token
+    creds = Credentials(
+        token=token_data.get("token"),
+        refresh_token=token_data.get("refresh_token"),
+        token_uri=token_data.get("token_uri"),
+        client_id=token_data.get("client_id"),
+        client_secret=token_data.get("client_secret"),
+        scopes=token_data.get("scopes")
+    )
+    
+    return build("calendar", "v3", credentials=creds)
