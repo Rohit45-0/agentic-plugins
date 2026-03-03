@@ -1,0 +1,2 @@
+[build]
+# No variables needed, Nixpacks handles Python correctly natively if we just don't interfere
