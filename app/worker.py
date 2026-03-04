@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from celery import Celery
-from celery.signals import worker_ready, task_failure
+from celery.signals import worker_ready, task_failure, worker_process_init
 
 from app.core.config import settings
 from app.api.whatsapp import _process_payload
@@ -28,6 +28,13 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
 )
+
+
+@worker_process_init.connect
+def on_worker_process_init(**kwargs):
+    from app.db.base import engine
+    engine.dispose()
+    logger.info("✅ Reinitialized SQLAlchemy engine for the worker process")
 
 
 @worker_ready.connect
