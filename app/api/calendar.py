@@ -19,7 +19,7 @@ if settings.DEBUG:
 
 SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 
-def _get_flow():
+def _get_flow(redirect_uri: str):
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(status_code=500, detail="Google credentials not configured.")
         
@@ -31,26 +31,30 @@ def _get_flow():
             "token_uri": "https://oauth2.googleapis.com/token",
             "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
             "client_secret": settings.GOOGLE_CLIENT_SECRET,
-            "redirect_uris": ["http://localhost:8001/api/v1/calendar/callback"]
+            "redirect_uris": [redirect_uri]
         }
     }
     
     flow = Flow.from_client_config(
         client_config, 
         scopes=SCOPES,
-        redirect_uri="http://localhost:8001/api/v1/calendar/callback"
+        redirect_uri=redirect_uri
     )
     return flow
 
 
 @router.get("/connect/{bot_config_id}")
-async def connect_calendar(bot_config_id: str):
+async def connect_calendar(bot_config_id: str, request: Request):
     """
     Step 1: The merchant clicks 'Connect Google Calendar' on the dashboard.
     We redirect them to the Google Accounts consent screen.
     We pass their bot_config_id in the 'state' parameter so we know who they are when they return.
     """
-    flow = _get_flow()
+    callback_url = str(request.url_for("calendar_callback"))
+    if "railway.app" in str(request.url):
+        callback_url = callback_url.replace("http://", "https://")
+        
+    flow = _get_flow(callback_url)
     authorization_url, state = flow.authorization_url(
         access_type="offline", # Need offline access to get a refresh token
         prompt="consent",      # Force consent screen to guarantee refresh token is given
@@ -75,10 +79,19 @@ async def calendar_callback(request: Request, db: Session = Depends(get_db)):
     if not config:
         raise HTTPException(status_code=404, detail="Bot config not found")
 
-    flow = _get_flow()
+    callback_url = str(request.url_for("calendar_callback"))
+    if "railway.app" in str(request.url):
+        callback_url = callback_url.replace("http://", "https://")
+
+    flow = _get_flow(callback_url)
     try:
         # Provide the full url from the request so oauthlib can verify the state
-        flow.fetch_token(authorization_response=str(request.url))
+        # Railway terminates SSL, so we rewrite the scheme if necessary
+        req_url = str(request.url)
+        if "railway.app" in req_url:
+            req_url = req_url.replace("http://", "https://")
+            
+        flow.fetch_token(authorization_response=req_url)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to fetch token: {str(e)}")
 
