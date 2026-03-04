@@ -622,12 +622,6 @@ async def _handle_owner_message(
             else:
                 msg_reply = "⚠️ Message was too short to save. Try sending more details."
 
-        await whatsapp_service.send_text_message(
-            to_number=from_number,
-            message=msg_reply,
-            phone_number_id=phone_number_id,
-        )
-
         await _send_and_persist(
             db=db,
             conversation=conversation,
