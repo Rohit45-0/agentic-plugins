@@ -23,12 +23,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # Azure OpenAI
-    AZURE_OPENAI_API_KEY: str
-    AZURE_OPENAI_ENDPOINT: str
-    AZURE_DEPLOYMENT_NAME: str = "gpt-4o"
+    # AZURE_OPENAI_API_KEY: str
+    # AZURE_OPENAI_ENDPOINT: str
+    # AZURE_DEPLOYMENT_NAME: str = "gpt-4o"
     
     # Pure OpenAI (for missing Azure embeddings)
-    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: str
 
     # WhatsApp Cloud API
     WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None

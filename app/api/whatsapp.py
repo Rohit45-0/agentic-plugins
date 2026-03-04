@@ -17,7 +17,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
-from openai import AsyncAzureOpenAI
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -38,7 +38,7 @@ logger = structlog.get_logger(__name__)
 router = APIRouter()
 
 # Lazy LLM client
-_llm_client: Optional[AsyncAzureOpenAI] = None
+_llm_client: Optional[AsyncOpenAI] = None
 
 
 class ManualModeUpdate(BaseModel):
@@ -62,13 +62,11 @@ class BotConfigUpsertRequest(BaseModel):
     is_active: bool = True
 
 
-def _get_llm_client() -> AsyncAzureOpenAI:
+def _get_llm_client() -> AsyncOpenAI:
     global _llm_client
     if _llm_client is None:
-        _llm_client = AsyncAzureOpenAI(
-            api_key=settings.AZURE_OPENAI_API_KEY,
-            azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_version="2024-02-15-preview",
+        _llm_client = AsyncOpenAI(
+            api_key=settings.OPENAI_API_KEY,
         )
     return _llm_client
 
@@ -535,7 +533,7 @@ async def _handle_owner_message(
         client = _get_llm_client()
         try:
             intent_resp = await client.chat.completions.create(
-                model=settings.AZURE_DEPLOYMENT_NAME,
+                model="gpt-4o-mini",
                 messages=[{
                     "role": "system",
                     "content": (
@@ -545,6 +543,7 @@ async def _handle_owner_message(
                         f"REMOVE|<item to remove> - when owner wants to remove/delete something (e.g. {ex_rm})\n"
                         f"QUERY|<question> - when owner is asking a question (e.g. {ex_query})\n"
                         f"SAVE|<info> - when owner shares business info/facts to remember (e.g. {ex_save})\n"
+                        f"GREET|hello - when owner just says hi, hello, or tests the bot.\n"
                         "Always clean up and format the content nicely. Support Hindi/Marathi/Hinglish."
                     )
                 }, {
@@ -569,7 +568,12 @@ async def _handle_owner_message(
             intent_content = text_body
 
         # Handle each intent
-        if intent_type == "ADD":
+        if intent_type == "GREET":
+            msg_reply = f"👋 Hello Boss! I'm your active {use_case} AI assistant.\n\nJust text me your prices, rules, or menu items right here and I'll memorize them for your customers! Try saying:\n'Haircut is 250 Rs'"
+            if use_case == "restaurant" or use_case == "tiffin":
+                msg_reply = f"👋 Hello Boss! I'm your active {use_case} AI assistant.\n\nJust text me your menu items or rules right here and I'll memorize them for your customers! Try saying:\n'Veg Thali is 100 Rs'"
+
+        elif intent_type == "ADD":
             count, err = await rag_service.ingest_text(db, intent_content, owner.id)
             if count > 0:
                 msg_reply = f"✅ Added to knowledge base:\n\n📝 \"{intent_content}\"\n\nCustomers can now ask about this!"
@@ -597,7 +601,7 @@ async def _handle_owner_message(
             context = "\n".join([f"- {c.content}" for c in chunks]) if chunks else "No info found."
             try:
                 answer_resp = await client.chat.completions.create(
-                    model=settings.AZURE_DEPLOYMENT_NAME,
+                    model="gpt-4o-mini",
                     messages=[
                         {"role": "system", "content": f"You are a business assistant. Answer the owner's question using this knowledge:\n{context}"},
                         {"role": "user", "content": intent_content},
@@ -681,7 +685,7 @@ async def _handle_owner_message(
 
                             client = _get_llm_client()
                             vision_resp = await client.chat.completions.create(
-                                model=settings.AZURE_DEPLOYMENT_NAME,
+                                model="gpt-4o-mini",
                                 messages=[{
                                     "role": "user",
                                     "content": [
@@ -857,7 +861,7 @@ async def _handle_customer_message(
 
     try:
         completion = await client.chat.completions.create(
-            model=settings.AZURE_DEPLOYMENT_NAME,
+            model="gpt-4o-mini",
             messages=messages,
             tools=tools,
             tool_choice="auto",
@@ -915,7 +919,7 @@ async def _handle_customer_message(
                 
             # Second call to AI with the tool results
             second_response = await client.chat.completions.create(
-                model=settings.AZURE_DEPLOYMENT_NAME,
+                model="gpt-4o-mini",
                 messages=messages,
                 max_tokens=500,
                 temperature=0.3,
