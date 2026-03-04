@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from celery import Celery
 from celery.signals import worker_ready, task_failure, worker_process_init
 
@@ -21,8 +20,10 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    # Windows needs solo pool; Linux (Railway) uses prefork
-    task_pool="solo" if os.name == "nt" else "prefork",
+    # Use solo pool everywhere — prefork causes ValueError crash in
+    # fast_trace_task on Railway (fork + re-import race condition).
+    # Since we use --concurrency=1, solo is simpler and more reliable.
+    worker_pool="solo",
     # Retry config — worker retries 3 times before giving up
     task_acks_late=True,
     task_reject_on_worker_lost=True,
