@@ -403,7 +403,6 @@ async def _process_payload(payload: dict):
 
     except Exception as e:
         logger.error(f"Error processing WhatsApp payload: {e}", exc_info=True)
-        raise  # Re-raise to let Celery retry the task
     finally:
         db.close()
 
