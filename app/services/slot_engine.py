@@ -243,3 +243,51 @@ def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str,
     except Exception as e:
         print(f"Failed to cancel Google Calendar events: {e}")
         return 0
+
+
+def check_customer_bookings(db: Session, bot_config_id: str, customer_phone: str, target_date_str: str) -> str:
+    """
+    Check if a specific customer has any Google Calendar events on a given date.
+    Returns a string list of booked times, or 'None'.
+    """
+    from app.api.calendar import get_calendar_service
+    import pytz
+
+    service = get_calendar_service(db, bot_config_id)
+    if not service:
+        return "None (Calendar not connected)"
+
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+        day_start = ist.localize(datetime.strptime(target_date_str, "%Y-%m-%d"))
+        day_end = day_start + timedelta(days=1)
+
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=day_start.isoformat(),
+            timeMax=day_end.isoformat(),
+            q=customer_phone,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        events = events_result.get('items', [])
+        found_times = []
+        for event in events:
+            summary = event.get('summary', '')
+            description = event.get('description', '')
+            if customer_phone in summary or customer_phone in description:
+                start_dt = event.get('start', {}).get('dateTime')
+                if start_dt:
+                    try:
+                        dt_obj = datetime.fromisoformat(start_dt)
+                        found_times.append(dt_obj.strftime("%I:%M %p"))
+                    except:
+                        pass
+
+        if found_times:
+            return ", ".join(found_times)
+        return "None"
+    except Exception as e:
+        print(f"Failed to check customer bookings: {e}")
+        return "Error checking appointments."

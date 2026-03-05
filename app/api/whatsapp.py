@@ -481,6 +481,7 @@ async def _process_single_message(
                     msg_type,
                     from_number,
                     phone_number_id,
+                    owner_phone_number,
                 )
         processed_successfully = True
     finally:
@@ -758,6 +759,7 @@ async def _handle_customer_message(
     msg_type: str,
     from_number: str,
     phone_number_id: Optional[str],
+    owner_phone_number: Optional[str],
 ):
     """Customer message flow: retrieve context -> LLM answer -> reply + escalation checks."""
     if msg_type != "text":
@@ -860,6 +862,23 @@ async def _handle_customer_message(
                     "required": ["target_date"],
                 },
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "check_customer_bookings",
+                "description": "Check if this customer has any existing appointments already booked on a specific date.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_date": {
+                            "type": "string",
+                            "description": "The date to check appointments for in YYYY-MM-DD format (e.g. 2026-03-06)."
+                        }
+                    },
+                    "required": ["target_date"],
+                },
+            }
         }
     ]
 
@@ -897,7 +916,7 @@ async def _handle_customer_message(
         if response_message.tool_calls:
             messages.append(response_message)
             import json
-            from app.services.slot_engine import get_final_available_slots, acquire_slot_lock, release_slot_lock, create_calendar_event, cancel_calendar_events
+            from app.services.slot_engine import get_final_available_slots, acquire_slot_lock, release_slot_lock, create_calendar_event, cancel_calendar_events, check_customer_bookings as slot_check_customer_bookings
             from app.services.whatsapp_service import send_text_message
             
             for tool_call in response_message.tool_calls:
@@ -925,10 +944,10 @@ async def _handle_customer_message(
                         if success:
                             tool_result = f"Successfully booked {dt_str}. Let the customer know."
                             # Send notification to owner
-                            if config.owner_phone_number:
+                            if owner_phone_number:
                                 try:
                                     await send_text_message(
-                                        to_number=config.owner_phone_number,
+                                        to_number=owner_phone_number,
                                         message=f"📅 New booking alert!\nCustomer {from_number} just booked an appointment for {dt_str}.",
                                         phone_number_id=phone_number_id,
                                     )
@@ -948,19 +967,27 @@ async def _handle_customer_message(
                         if cancelled_count > 0:
                             tool_result = f"Successfully cancelled {cancelled_count} booking(s) for {target_date_str}."
                             # Notify owner about cancellation
-                            if config.owner_phone_number:
+                            if owner_phone_number:
                                 try:
                                     await send_text_message(
-                                        to_number=config.owner_phone_number,
+                                        to_number=owner_phone_number,
                                         message=f"❌ Booking cancelled!\nCustomer {from_number} cancelled {cancelled_count} booking(s) for {target_date_str}.",
                                         phone_number_id=phone_number_id,
                                     )
                                 except Exception as notify_err:
                                     logger.error(f"Failed to notify owner about cancellation: {notify_err}")
                         else:
-                            tool_result = f"No bookings found for {from_number} on {target_date_str} to cancel."
+                            tool_result = f"No bookings found for {target_date_str} to cancel."
                     except Exception as e:
                         tool_result = f"Error cancelling bookings: {e}"
+
+                elif function_name == "check_customer_bookings":
+                    target_date_str = function_args.get("target_date")
+                    existing_bookings = slot_check_customer_bookings(db, str(config.id), from_number, target_date_str)
+                    if existing_bookings != "None":
+                        tool_result = f"The customer currently has appointments at: {existing_bookings}."
+                    else:
+                        tool_result = f"The customer has NO appointments for {target_date_str}."
 
                 else:
                     tool_result = "Unknown function call."
