@@ -6,10 +6,7 @@ from app.db.models import SlotConfig
 from app.core.config import settings
 
 # Shared Redis client for locks
-# Ensure correct connection string parsing for Upstash (need rediss:// for secure)
 _redis_url = settings.REDIS_URL
-if _redis_url.startswith("rediss://") and "?" not in _redis_url:
-    _redis_url += "?ssl_cert_reqs=CERT_NONE"
 redis_client = redis.from_url(_redis_url)
 
 async def generate_available_slots(db: Session, slot_config_id: str, target_date: datetime):
