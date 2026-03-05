@@ -807,7 +807,7 @@ async def _handle_customer_message(
         "List specific items, prices, and details when available. "
         "Only say you don't have information if the knowledge base truly contains nothing relevant. "
         "Keep answers concise but complete. Hinglish is fine if the customer uses Hindi.\n\n"
-        "If the customer wants to check availability or book a slot, ALWAYS use the provided tools.\n\n"
+        "If the customer wants to check availability, book a slot, check their own existing appointments, or cancel appointments, ALWAYS use the provided tools. You DO have access to managing their calendar through these tools. Do NOT say you don't have access.\n\n"
         f"=== BUSINESS KNOWLEDGE ===\n{context}\n=== END ==="
     )
 
