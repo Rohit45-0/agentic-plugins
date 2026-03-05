@@ -16,8 +16,11 @@ router = APIRouter()
 # If testing locally, allow insecure HTTP for OAuth
 if settings.DEBUG:
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
-SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
+# We need events to create bookings, and readonly to check freeBusy availability
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/calendar.readonly"
+]
 
 def _get_flow(redirect_uri: str):
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
