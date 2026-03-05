@@ -843,6 +843,23 @@ async def _handle_customer_message(
                     "required": ["date_time"],
                 },
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cancel_bookings",
+                "description": "Cancel all bookings for a specific customer phone number on a specific date. This will remove the events from Google Calendar.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "target_date": {
+                            "type": "string",
+                            "description": "The date to cancel bookings for in YYYY-MM-DD format (e.g. 2026-03-06)."
+                        }
+                    },
+                    "required": ["target_date"],
+                },
+            }
         }
     ]
 
@@ -880,7 +897,8 @@ async def _handle_customer_message(
         if response_message.tool_calls:
             messages.append(response_message)
             import json
-            from app.services.slot_engine import get_final_available_slots, acquire_slot_lock, release_slot_lock, create_calendar_event
+            from app.services.slot_engine import get_final_available_slots, acquire_slot_lock, release_slot_lock, create_calendar_event, cancel_calendar_events
+            from app.services.whatsapp_service import send_text_message
             
             for tool_call in response_message.tool_calls:
                 function_name = tool_call.function.name
@@ -906,15 +924,13 @@ async def _handle_customer_message(
                         success = await create_calendar_event(db, str(config.id), from_number, dt_str)
                         if success:
                             tool_result = f"Successfully booked {dt_str}. Let the customer know."
-                            # Send notification payload to owner
+                            # Send notification to owner
                             if config.owner_phone_number:
                                 try:
-                                    from app.services.whatsapp import send_whatsapp_message
-                                    await send_whatsapp_message(
+                                    await send_text_message(
                                         to_number=config.owner_phone_number,
-                                        message_text=f"📅 New booking alert!\nCustomer {from_number} just booked an appointment for {dt_str}.",
+                                        message=f"📅 New booking alert!\nCustomer {from_number} just booked an appointment for {dt_str}.",
                                         phone_number_id=phone_number_id,
-                                        access_token=config.access_token or settings.WHATSAPP_ACCESS_TOKEN
                                     )
                                 except Exception as notify_err:
                                     logger.error(f"Failed to notify owner about booking: {notify_err}")
@@ -924,6 +940,28 @@ async def _handle_customer_message(
                             tool_result = f"Failed to book {dt_str} due to calendar error. Ask them to try again later."
                     else:
                         tool_result = f"Failed to book {dt_str}. The slot is locked by someone else or no longer available. Ask them to pick another time."
+
+                elif function_name == "cancel_bookings":
+                    target_date_str = function_args.get("target_date")
+                    try:
+                        cancelled_count = cancel_calendar_events(db, str(config.id), from_number, target_date_str)
+                        if cancelled_count > 0:
+                            tool_result = f"Successfully cancelled {cancelled_count} booking(s) for {target_date_str}."
+                            # Notify owner about cancellation
+                            if config.owner_phone_number:
+                                try:
+                                    await send_text_message(
+                                        to_number=config.owner_phone_number,
+                                        message=f"❌ Booking cancelled!\nCustomer {from_number} cancelled {cancelled_count} booking(s) for {target_date_str}.",
+                                        phone_number_id=phone_number_id,
+                                    )
+                                except Exception as notify_err:
+                                    logger.error(f"Failed to notify owner about cancellation: {notify_err}")
+                        else:
+                            tool_result = f"No bookings found for {from_number} on {target_date_str} to cancel."
+                    except Exception as e:
+                        tool_result = f"Error cancelling bookings: {e}"
+
                 else:
                     tool_result = "Unknown function call."
                     

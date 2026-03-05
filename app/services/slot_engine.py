@@ -198,3 +198,48 @@ async def create_calendar_event(db: Session, bot_config_id: str, customer_phone:
     except Exception as e:
         print(f"Failed to create Google Calendar event: {e}")
         return False
+
+
+def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str, target_date_str: str) -> int:
+    """
+    Cancel (delete) all Google Calendar events for a specific customer phone on a given date.
+    target_date_str should be 'YYYY-MM-DD'.
+    Returns number of events cancelled.
+    """
+    from app.db.models import WhatsAppBotConfig
+    from app.api.calendar import get_calendar_service
+    import pytz
+
+    service = get_calendar_service(db, bot_config_id)
+    if not service:
+        return 0
+
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+        day_start = ist.localize(datetime.strptime(target_date_str, "%Y-%m-%d"))
+        day_end = day_start + timedelta(days=1)
+
+        # Search for events on that day that match the customer phone
+        events_result = service.events().list(
+            calendarId='primary',
+            timeMin=day_start.isoformat(),
+            timeMax=day_end.isoformat(),
+            q=customer_phone,  # Search by customer phone in event summary/description
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        events = events_result.get('items', [])
+        cancelled = 0
+        for event in events:
+            summary = event.get('summary', '')
+            description = event.get('description', '')
+            # Only delete events that belong to this customer
+            if customer_phone in summary or customer_phone in description:
+                service.events().delete(calendarId='primary', eventId=event['id']).execute()
+                cancelled += 1
+
+        return cancelled
+    except Exception as e:
+        print(f"Failed to cancel Google Calendar events: {e}")
+        return 0
