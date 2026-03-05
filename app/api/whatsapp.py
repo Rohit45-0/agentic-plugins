@@ -357,7 +357,7 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
-async def handle_incoming(request: Request):
+async def handle_incoming(request: Request, background_tasks: BackgroundTasks):
     """Main listener. Meta POSTs here every time someone messages the bot."""
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
@@ -368,10 +368,8 @@ async def handle_incoming(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Dispatch to Celery worker immediately
-    # We import locally to prevent circular imports
-    from app.worker import process_whatsapp_webhook
-    process_whatsapp_webhook.delay(payload)
+    # Run processing directly in the background without Celery
+    background_tasks.add_task(_process_payload, payload)
     
     return {"status": "ok"}
 
