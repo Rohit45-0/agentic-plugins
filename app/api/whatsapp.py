@@ -846,10 +846,23 @@ async def _handle_customer_message(
         }
     ]
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
-    ]
+    # Fetch last 10 messages for context
+    from app.db.models import WhatsAppMessage
+    history_records = db.query(WhatsAppMessage).filter(
+        WhatsAppMessage.conversation_id == conversation.id,
+        WhatsAppMessage.id != inbound_record.id  # Exclude the current message we just saved
+    ).order_by(WhatsAppMessage.created_at.desc()).limit(10).all()
+
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Add history in chronological order
+    for rec in reversed(history_records):
+        role = "assistant" if rec.direction == "outbound" else "user"
+        content = rec.content or ""
+        if content:
+            messages.append({"role": role, "content": content})
+
+    messages.append({"role": "user", "content": question})
 
     try:
         completion = await client.chat.completions.create(
