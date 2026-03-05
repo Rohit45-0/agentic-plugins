@@ -906,6 +906,18 @@ async def _handle_customer_message(
                         success = await create_calendar_event(db, str(config.id), from_number, dt_str)
                         if success:
                             tool_result = f"Successfully booked {dt_str}. Let the customer know."
+                            # Send notification payload to owner
+                            if config.owner_phone_number:
+                                try:
+                                    from app.services.whatsapp import send_whatsapp_message
+                                    await send_whatsapp_message(
+                                        to_number=config.owner_phone_number,
+                                        message_text=f"📅 New booking alert!\nCustomer {from_number} just booked an appointment for {dt_str}.",
+                                        phone_number_id=phone_number_id,
+                                        access_token=config.access_token or settings.WHATSAPP_ACCESS_TOKEN
+                                    )
+                                except Exception as notify_err:
+                                    logger.error(f"Failed to notify owner about booking: {notify_err}")
                         else:
                             # Calendar failed, free the lock
                             await release_slot_lock(str(config.id), dt_str, from_number)
