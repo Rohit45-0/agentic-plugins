@@ -935,7 +935,7 @@ async def _handle_customer_message(
             
     except Exception as e:
         logger.error(f"LLM call failed: {e}")
-        reply = "Sorry, I'm having trouble right now. A human teammate can help shortly. 🙏"
+        reply = f"Sorry, I'm having trouble right now. Error: {str(e)[:400]}"
 
     await _send_and_persist(
         db=db,
