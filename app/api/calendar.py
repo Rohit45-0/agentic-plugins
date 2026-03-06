@@ -2,7 +2,8 @@ import os
 import datetime
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -10,16 +11,24 @@ from googleapiclient.discovery import build
 from app.db.base import get_db
 from app.db.models import WhatsAppBotConfig
 from app.core.config import settings
+import json
+from cryptography.fernet import Fernet
+
+def _get_fernet():
+    key = settings.FERNET_KEY.encode('utf-8')
+    return Fernet(key)
 
 router = APIRouter()
 
 # If testing locally, allow insecure HTTP for OAuth
 if settings.DEBUG:
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-# We need events to create bookings, and readonly to check freeBusy availability
+# We need events to create bookings, readonly to check freeBusy availability,
+# and drive.readonly to read Google Docs for RAG knowledge sync
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/calendar.readonly"
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/drive.readonly"
 ]
 
 def _get_flow(redirect_uri: str):
@@ -67,7 +76,7 @@ async def connect_calendar(bot_config_id: str, request: Request):
 
 
 @router.get("/callback")
-async def calendar_callback(request: Request, db: Session = Depends(get_db)):
+async def calendar_callback(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Step 2: Google redirects here with an authorization code.
     We exchange the code for a permanent access/refresh token, and save it to the DB.
@@ -78,7 +87,8 @@ async def calendar_callback(request: Request, db: Session = Depends(get_db)):
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
         
-    config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == state).first()
+    res_config = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == state))
+    config = res_config.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Bot config not found")
 
@@ -100,8 +110,9 @@ async def calendar_callback(request: Request, db: Session = Depends(get_db)):
 
     creds = flow.credentials
     
-    # Save token payload to PostgreSQL
-    config.google_calendar_token = {
+    # Save token payload to PostgreSQL, encrypted via Fernet
+    fernet = _get_fernet()
+    raw_token_data = {
         "token": creds.token,
         "refresh_token": creds.refresh_token,
         "token_uri": creds.token_uri,
@@ -109,22 +120,33 @@ async def calendar_callback(request: Request, db: Session = Depends(get_db)):
         "client_secret": creds.client_secret,
         "scopes": creds.scopes
     }
-    db.commit()
+    encrypted_bytes = fernet.encrypt(json.dumps(raw_token_data).encode("utf-8"))
+
+    config.google_calendar_token = {
+        "encrypted_data": encrypted_bytes.decode("utf-8")
+    }
+    await db.commit()
 
     return {"message": "Google Calendar connected successfully! You can close this tab."}
 
 
-def get_calendar_service(db: Session, bot_config_id: str):
+async def get_calendar_service(db: AsyncSession, bot_config_id: str):
     """
     Step 3: Internal helper function.
     Given a bot_config_id, returns a working Google Calendar API client.
     Automatically uses the refresh token if the current token is expired.
     """
-    config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id).first()
+    res_config = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id))
+    config = res_config.scalar_one_or_none()
     if not config or not config.google_calendar_token:
         return None
         
     token_data = config.google_calendar_token
+    if "encrypted_data" in token_data:
+        fernet = _get_fernet()
+        decrypted_bytes = fernet.decrypt(token_data["encrypted_data"].encode("utf-8"))
+        token_data = json.loads(decrypted_bytes.decode("utf-8"))
+
     creds = Credentials(
         token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),

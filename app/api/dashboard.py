@@ -1,19 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from typing import Optional, Dict, Any
 from sqlalchemy import func
 import uuid
 
 from app.db.base import get_db
-from app.db.models import WhatsAppBotConfig, WhatsAppConversation, WhatsAppMessage
+from app.api.deps import get_current_user
+from app.db.models import WhatsAppBotConfig, WhatsAppConversation, WhatsAppMessage, User
 
 router = APIRouter()
 
 @router.get("/analytics")
 async def get_dashboard_analytics(
     bot_config_id: Optional[str] = Query(None),
-    user_id: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """
     Returns high-level analytical data: 
@@ -22,23 +24,20 @@ async def get_dashboard_analytics(
     - Peak messaging hours
     - Total Conversations
     """
-    if not user_id and not bot_config_id:
-        raise HTTPException(status_code=400, detail="Must provide user_id or bot_config_id")
-
-    try:
-        user_uuid = uuid.UUID(user_id) if user_id else None
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id")
+    user_uuid = current_user.id
 
     # For now, scoping by user_id and fetching all their conversations
-    base_conv_query = db.query(WhatsAppConversation)
+    base_conv_query = select(WhatsAppConversation)
     if user_uuid:
         base_conv_query = base_conv_query.filter(WhatsAppConversation.user_id == user_uuid)
 
-    total_conversations = base_conv_query.count()
+    res_total = await db.execute(select(func.count()).select_from(base_conv_query.subquery()))
+    total_conversations = res_total.scalar() or 0
     
     # Calculate escalations (manual_mode == True)
-    escalations = base_conv_query.filter(WhatsAppConversation.manual_mode == True).count()
+    escalations_query = base_conv_query.filter(WhatsAppConversation.manual_mode == True)
+    res_esc = await db.execute(select(func.count()).select_from(escalations_query.subquery()))
+    escalations = res_esc.scalar() or 0
 
     # Peak hours: Groups messages by hour of the day
     # Fallback to general estimation if no messages
@@ -46,11 +45,12 @@ async def get_dashboard_analytics(
     
     # Let's count messages by hour if we have postgres extract function setup. 
     # For SQLite compatibility or general SQLAlchemy we can fetch and group
-    base_msg_query = db.query(WhatsAppMessage)
+    base_msg_query = select(WhatsAppMessage)
     if user_uuid:
         base_msg_query = base_msg_query.filter(WhatsAppMessage.user_id == user_uuid)
     
-    messages = base_msg_query.all()
+    res_msg = await db.execute(base_msg_query)
+    messages = res_msg.scalars().all()
     
     hour_counts = {}
     for msg in messages:

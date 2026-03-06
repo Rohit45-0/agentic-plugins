@@ -62,17 +62,18 @@ app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Bot Anal
 @app.on_event("startup")
 async def startup() -> None:
     """Ensure plugin-specific tables exist for inbox/escalation workflows."""
-    Base.metadata.create_all(
-        bind=engine,
-        tables=[
-            models.SlotConfig.__table__,
-            models.WhatsAppBotConfig.__table__,
-            models.WhatsAppConversation.__table__,
-            models.WhatsAppMessage.__table__,
-            models.WhatsAppEscalation.__table__,
-            models.WhatsAppProcessedMessage.__table__,
-        ],
-    )
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            Base.metadata.create_all,
+            tables=[
+                models.SlotConfig.__table__,
+                models.WhatsAppBotConfig.__table__,
+                models.WhatsAppConversation.__table__,
+                models.WhatsAppMessage.__table__,
+                models.WhatsAppEscalation.__table__,
+                models.WhatsAppProcessedMessage.__table__,
+            ],
+        )
 
 
 @app.get("/", tags=["Health"])

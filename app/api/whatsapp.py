@@ -20,10 +20,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.config import settings
-from app.db.base import SessionLocal, get_db
+from app.db.base import AsyncSessionLocal, get_db
 from app.db.models import (
     User,
     WhatsAppBotConfig,
@@ -32,13 +33,34 @@ from app.db.models import (
     WhatsAppMessage,
     WhatsAppProcessedMessage,
 )
+from app.api.deps import get_current_user
 from app.services import rag_service, whatsapp_service
 
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
+import time
+from collections import defaultdict
+from typing import Optional
+
 # Lazy LLM client
 _llm_client: Optional[AsyncOpenAI] = None
+
+# Naive In-Memory Rate Limiting
+_rate_limits = defaultdict(list)
+RATE_LIMIT_MAX_MESSAGES = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
+
+def _is_rate_limited(identifier: str) -> bool:
+    now = time.time()
+    # Prune old timestamps
+    _rate_limits[identifier] = [t for t in _rate_limits[identifier] if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    
+    if len(_rate_limits[identifier]) >= RATE_LIMIT_MAX_MESSAGES:
+        return True
+        
+    _rate_limits[identifier].append(now)
+    return False
 
 
 class ManualModeUpdate(BaseModel):
@@ -134,25 +156,28 @@ def _should_escalate(question: str, rag_chunks_found: int, bot_reply: str) -> tu
     return False, None, "low"
 
 
-def _resolve_owner_context(db: Session, phone_number_id: Optional[str]) -> tuple[Optional[User], Optional[WhatsAppBotConfig], Optional[str]]:
+async def _resolve_owner_context(db: AsyncSession, phone_number_id: Optional[str]) -> tuple[Optional[User], Optional[WhatsAppBotConfig], Optional[str]]:
     config = None
     owner = None
 
     if phone_number_id:
-        config = (
-            db.query(WhatsAppBotConfig)
+        stmt = (
+            select(WhatsAppBotConfig)
             .filter(
                 WhatsAppBotConfig.phone_number_id == phone_number_id,
                 WhatsAppBotConfig.is_active.is_(True),
             )
-            .first()
         )
+        res = await db.execute(stmt)
+        config = res.scalar_one_or_none()
 
     if config:
-        owner = db.query(User).filter(User.id == config.user_id).first()
+        res_owner = await db.execute(select(User).filter(User.id == config.user_id))
+        owner = res_owner.scalar_one_or_none()
 
     if owner is None:
-        owner = db.query(User).first()
+        res_first = await db.execute(select(User))
+        owner = res_first.scalar_one() if res_first else None
 
     owner_phone_number = None
     if config and config.owner_phone_number:
@@ -163,27 +188,28 @@ def _resolve_owner_context(db: Session, phone_number_id: Optional[str]) -> tuple
     return owner, config, owner_phone_number
 
 
-def _get_or_create_conversation(
-    db: Session,
+async def _get_or_create_conversation(
+    db: AsyncSession,
     user_id: UUID,
     customer_phone: str,
     phone_number_id: Optional[str],
 ) -> WhatsAppConversation:
-    conversation = (
-        db.query(WhatsAppConversation)
+    stmt = (
+        select(WhatsAppConversation)
         .filter(
             WhatsAppConversation.user_id == user_id,
             WhatsAppConversation.customer_phone == customer_phone,
         )
-        .first()
     )
+    res = await db.execute(stmt)
+    conversation = res.scalar_one_or_none()
 
     if conversation:
         if phone_number_id and conversation.phone_number_id != phone_number_id:
             conversation.phone_number_id = phone_number_id
             conversation.updated_at = _utcnow()
-            db.commit()
-            db.refresh(conversation)
+            await db.commit()
+            await db.refresh(conversation)
         return conversation
 
     conversation = WhatsAppConversation(
@@ -193,13 +219,13 @@ def _get_or_create_conversation(
         last_message_at=_utcnow(),
     )
     db.add(conversation)
-    db.commit()
-    db.refresh(conversation)
+    await db.commit()
+    await db.refresh(conversation)
     return conversation
 
 
-def _persist_message(
-    db: Session,
+async def _persist_message(
+    db: AsyncSession,
     conversation: WhatsAppConversation,
     user_id: UUID,
     direction: str,
@@ -228,25 +254,23 @@ def _persist_message(
         conversation.last_message_at = _utcnow()
         conversation.updated_at = _utcnow()
 
-        db.commit()
-        db.refresh(record)
-        db.refresh(conversation)
+        await db.commit()
+        await db.refresh(record)
+        await db.refresh(conversation)
         return record
     except IntegrityError:
-        db.rollback()
+        await db.rollback()
         if wa_message_id:
-            existing = (
-                db.query(WhatsAppMessage)
-                .filter(WhatsAppMessage.wa_message_id == wa_message_id)
-                .first()
-            )
+            stmt = select(WhatsAppMessage).filter(WhatsAppMessage.wa_message_id == wa_message_id)
+            res = await db.execute(stmt)
+            existing = res.scalar_one_or_none()
             if existing:
                 return existing
         raise
 
 
-def _create_escalation(
-    db: Session,
+async def _create_escalation(
+    db: AsyncSession,
     conversation: WhatsAppConversation,
     user_id: UUID,
     reason: str,
@@ -254,15 +278,16 @@ def _create_escalation(
     notes: Optional[str] = None,
     trigger_message_id: Optional[UUID] = None,
 ) -> WhatsAppEscalation:
-    open_existing = (
-        db.query(WhatsAppEscalation)
+    stmt = (
+        select(WhatsAppEscalation)
         .filter(
             WhatsAppEscalation.conversation_id == conversation.id,
             WhatsAppEscalation.status == "open",
             WhatsAppEscalation.reason == reason,
         )
-        .first()
     )
+    res = await db.execute(stmt)
+    open_existing = res.scalar_one_or_none()
     if open_existing:
         return open_existing
 
@@ -276,36 +301,33 @@ def _create_escalation(
         notes=notes,
     )
     db.add(escalation)
-    db.commit()
-    db.refresh(escalation)
+    await db.commit()
+    await db.refresh(escalation)
     return escalation
 
 
-def _is_duplicate_message(db: Session, wa_message_id: str) -> bool:
+async def _is_duplicate_message(db: AsyncSession, wa_message_id: str) -> bool:
     if not wa_message_id:
         return False
-    return (
-        db.query(WhatsAppProcessedMessage)
-        .filter(WhatsAppProcessedMessage.wa_message_id == wa_message_id)
-        .first()
-        is not None
-    )
+        
+    res = await db.execute(select(WhatsAppProcessedMessage).filter(WhatsAppProcessedMessage.wa_message_id == wa_message_id))
+    return res.scalar_one_or_none() is not None
 
 
-def _mark_processed(db: Session, wa_message_id: str, user_id: Optional[UUID]) -> None:
+async def _mark_processed(db: AsyncSession, wa_message_id: str, user_id: Optional[UUID]) -> None:
     if not wa_message_id:
         return
     try:
         rec = WhatsAppProcessedMessage(wa_message_id=wa_message_id, user_id=user_id)
         db.add(rec)
-        db.commit()
+        await db.commit()
     except Exception:
-        db.rollback()
+        await db.rollback()
         logger.warning("Processed message marker already exists or failed", wa_message_id=wa_message_id)
 
 
 async def _send_and_persist(
-    db: Session,
+    db: AsyncSession,
     conversation: WhatsAppConversation,
     user_id: UUID,
     to_number: str,
@@ -323,7 +345,7 @@ async def _send_and_persist(
         if isinstance(response, dict)
         else None
     )
-    _persist_message(
+    await _persist_message(
         db=db,
         conversation=conversation,
         user_id=user_id,
@@ -376,37 +398,35 @@ async def handle_incoming(request: Request, background_tasks: BackgroundTasks):
 
 async def _process_payload(payload: dict):
     """Parse Meta webhook payload and process all message events in the batch."""
-    db = SessionLocal()
-    try:
-        for entry in payload.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
-                metadata = value.get("metadata", {})
-                phone_number_id = metadata.get("phone_number_id") or settings.WHATSAPP_PHONE_NUMBER_ID
+    async with AsyncSessionLocal() as db:
+        try:
+            for entry in payload.get("entry", []):
+                for change in entry.get("changes", []):
+                    value = change.get("value", {})
+                    metadata = value.get("metadata", {})
+                    phone_number_id = metadata.get("phone_number_id") or settings.WHATSAPP_PHONE_NUMBER_ID
 
-                owner, config, owner_phone_number = _resolve_owner_context(db, phone_number_id)
-                if owner is None:
-                    logger.warning("No owner found for incoming message batch")
-                    continue
+                    owner, config, owner_phone_number = await _resolve_owner_context(db, phone_number_id)
+                    if owner is None:
+                        logger.warning("No owner found for incoming message batch")
+                        continue
 
-                for msg in value.get("messages", []) or []:
-                    await _process_single_message(
-                        db=db,
-                        owner=owner,
-                        config=config,
-                        msg=msg,
-                        owner_phone_number=owner_phone_number,
-                        phone_number_id=phone_number_id,
-                    )
+                    for msg in value.get("messages", []) or []:
+                        await _process_single_message(
+                            db=db,
+                            owner=owner,
+                            config=config,
+                            msg=msg,
+                            owner_phone_number=owner_phone_number,
+                            phone_number_id=phone_number_id,
+                        )
 
-    except Exception as e:
-        logger.error(f"Error processing WhatsApp payload: {e}", exc_info=True)
-    finally:
-        db.close()
+        except Exception as e:
+            logger.error(f"Error processing WhatsApp payload: {e}", exc_info=True)
 
 
 async def _process_single_message(
-    db: Session,
+    db: AsyncSession,
     owner: User,
     config: Optional[WhatsAppBotConfig],
     msg: dict,
@@ -421,20 +441,25 @@ async def _process_single_message(
     if not from_number or not msg_id:
         return
 
-    if _is_duplicate_message(db, msg_id):
+    # 1. Check Rate Limits (Protect OpenAI costs and DB spam)
+    if _is_rate_limited(f"customer:{from_number}"):
+        logger.warning(f"Rate limit exceeded for customer phone: {from_number}")
+        return
+
+    if await _is_duplicate_message(db, msg_id):
         logger.info("Skipping duplicate webhook message", wa_message_id=msg_id)
         return
 
     await whatsapp_service.mark_as_read(msg_id, phone_number_id=phone_number_id)
 
-    conversation = _get_or_create_conversation(
+    conversation = await _get_or_create_conversation(
         db=db,
         user_id=owner.id,
         customer_phone=from_number,
         phone_number_id=phone_number_id,
     )
 
-    inbound_record = _persist_message(
+    inbound_record = await _persist_message(
         db=db,
         conversation=conversation,
         user_id=owner.id,
@@ -461,7 +486,7 @@ async def _process_single_message(
                     phone_number_id=phone_number_id,
                     is_ai_generated=False,
                 )
-                _create_escalation(
+                await _create_escalation(
                     db=db,
                     conversation=conversation,
                     user_id=owner.id,
@@ -486,11 +511,11 @@ async def _process_single_message(
         processed_successfully = True
     finally:
         if processed_successfully:
-            _mark_processed(db, msg_id, owner.id)
+            await _mark_processed(db, msg_id, owner.id)
 
 
 async def _handle_owner_message(
-    db: Session,
+    db: AsyncSession,
     owner: User,
     config: Optional[WhatsAppBotConfig],
     conversation: WhatsAppConversation,
@@ -527,9 +552,14 @@ async def _handle_owner_message(
             ex_rm = "'remove dosa from menu' → REMOVE|Dosa"
             ex_query = "'what items do we have?' → QUERY|what items do we have"
             ex_save = "'we are open 9am to 10pm' → SAVE|Business hours: 9 AM to 10 PM"
+            
+        ex_cancel = "'cancel booking for 9876543210 on 2026-03-02' → CANCEL|<phone_number>|<YYYY-MM-DD>"
+        ex_cancel_all = "'cancel all bookings for today' → CANCEL|ALL|<YYYY-MM-DD>"
 
         # Use AI to understand owner intent
         client = _get_llm_client()
+        today_str = datetime.today().strftime('%Y-%m-%d')
+        
         try:
             intent_resp = await client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -543,7 +573,10 @@ async def _handle_owner_message(
                         f"QUERY|<question> - when owner is asking a question (e.g. {ex_query})\n"
                         f"SAVE|<info> - when owner shares business info/facts to remember (e.g. {ex_save})\n"
                         f"GREET|hello - when owner just says hi, hello, or tests the bot.\n"
-                        "Always clean up and format the content nicely. Support Hindi/Marathi/Hinglish."
+                        f"CANCEL|<phone_number>|<date> - when owner wants to completely cancel a specific customer's booking. (e.g. {ex_cancel})\n"
+                        f"CANCEL|ALL|<date> - when owner wants to cancel ALL schedule/appointments for a day. (e.g. {ex_cancel_all})\n"
+                        "Always clean up and format the content nicely. Support Hindi/Marathi/Hinglish.\n"
+                        f"CRITICAL: The current date is {today_str}. If the user refers to 'today', 'tomorrow', or implies a date, map it to the actual YYYY-MM-DD date based on the current date: {today_str}."
                     )
                 }, {
                     "role": "user",
@@ -559,12 +592,20 @@ async def _handle_owner_message(
 
         # Parse intent
         if "|" in intent_raw:
-            intent_type, intent_content = intent_raw.split("|", 1)
-            intent_type = intent_type.strip().upper()
-            intent_content = intent_content.strip()
+            parts = intent_raw.split("|", 1)
+            if intent_raw.startswith("CANCEL|") and len(intent_raw.split("|")) >= 3:
+                parts = intent_raw.split("|", 2)
+                intent_type = parts[0].strip().upper()
+                intent_content = parts[1].strip()
+                extra_content = parts[2].strip() if len(parts) > 2 else ""
+            else:
+                intent_type = parts[0].strip().upper()
+                intent_content = parts[1].strip()
+                extra_content = ""
         else:
             intent_type = "SAVE"
             intent_content = text_body
+            extra_content = ""
 
         # Handle each intent
         if intent_type == "GREET":
@@ -583,14 +624,16 @@ async def _handle_owner_message(
             # Search for matching chunks and delete them
             from app.db.models import KnowledgeChunk
             search_term = intent_content.lower()
-            matching = db.query(KnowledgeChunk).filter(
+            stmt = select(KnowledgeChunk).filter(
                 KnowledgeChunk.user_id == owner.id,
                 KnowledgeChunk.content.ilike(f"%{search_term}%"),
-            ).all()
+            )
+            res = await db.execute(stmt)
+            matching = res.scalars().all()
             if matching:
                 for chunk in matching:
-                    db.delete(chunk)
-                db.commit()
+                    await db.delete(chunk)
+                await db.commit()
                 msg_reply = f"🗑️ Removed {len(matching)} item(s) matching \"{intent_content}\" from knowledge base."
             else:
                 msg_reply = f"⚠️ Couldn't find anything matching \"{intent_content}\" in the knowledge base."
@@ -611,6 +654,50 @@ async def _handle_owner_message(
                 msg_reply = (answer_resp.choices[0].message.content or "").strip()
             except Exception as e:
                 msg_reply = f"❌ Error answering: {e}"
+
+        elif intent_type == "CANCEL":
+            customer_phone_provided = intent_content
+            target_date_str = extra_content
+            
+            from app.services.slot_engine import cancel_calendar_events
+            try:
+                if not config or not hasattr(config, "id") or not config.id:
+                    msg_reply = "❌ You must configure and connect your Google Calendar to cancel bookings."
+                else:
+                    cancelled_count = await cancel_calendar_events(
+                        db=db, 
+                        bot_config_id=str(config.id), 
+                        customer_phone=customer_phone_provided, 
+                        target_date_str=target_date_str
+                    )
+                    if cancelled_count > 0:
+                        if customer_phone_provided == "ALL":
+                            msg_reply = f"✅ Successfully cancelled {cancelled_count} booking(s) for EVERYONE on {target_date_str} in Google Calendar."
+                        else:
+                            msg_reply = f"✅ Successfully cancelled {cancelled_count} booking(s) for customer {customer_phone_provided} on {target_date_str} in Google Calendar."
+                            # Notify the specific customer automatically
+                            try:
+                                await _send_and_persist(
+                                    db=db,
+                                    conversation=conversation, # Note: this conversation is the owner's. 
+                                    user_id=owner.id,
+                                    to_number=customer_phone_provided,
+                                    text=f"⚠️ Your appointment on {target_date_str} has been cancelled by the business. Please reach out or book a new slot if needed.",
+                                    phone_number_id=phone_number_id,
+                                    is_ai_generated=False,
+                                )
+                                msg_reply += "\nThe customer has been notified via WhatsApp automatically."
+                            except Exception as ne:
+                                logger.error(f"Failed to notify customer of manual cancellation: {ne}")
+                                msg_reply += "\n⚠️ But failed to notify the customer automatically. Please let them know."
+                    else:
+                        if customer_phone_provided == "ALL":
+                            msg_reply = f"❌ No bookings found to cancel on '{target_date_str}'."
+                        else:
+                            msg_reply = f"❌ No bookings found matching customer phone '{customer_phone_provided}' on '{target_date_str}'."
+            except Exception as e:
+                logger.error(f"Error cancelling bookings from owner message: {e}")
+                msg_reply = f"❌ Error cancelling bookings: {e}"
 
         else:  # SAVE
             count, err = await rag_service.ingest_text(db, intent_content, owner.id)
@@ -750,7 +837,7 @@ async def _handle_owner_message(
 
 
 async def _handle_customer_message(
-    db: Session,
+    db: AsyncSession,
     owner: User,
     config: Optional[WhatsAppBotConfig],
     conversation: WhatsAppConversation,
@@ -884,10 +971,17 @@ async def _handle_customer_message(
 
     # Fetch last 10 messages for context
     from app.db.models import WhatsAppMessage
-    history_records = db.query(WhatsAppMessage).filter(
-        WhatsAppMessage.conversation_id == conversation.id,
-        WhatsAppMessage.id != inbound_record.id  # Exclude the current message we just saved
-    ).order_by(WhatsAppMessage.created_at.desc()).limit(10).all()
+    stmt_hist = (
+        select(WhatsAppMessage)
+        .filter(
+            WhatsAppMessage.conversation_id == conversation.id,
+            WhatsAppMessage.id != inbound_record.id  # Exclude the current message we just saved
+        )
+        .order_by(WhatsAppMessage.created_at.desc())
+        .limit(10)
+    )
+    res_hist = await db.execute(stmt_hist)
+    history_records = res_hist.scalars().all()
 
     messages = [{"role": "system", "content": system_prompt}]
     
@@ -963,7 +1057,7 @@ async def _handle_customer_message(
                 elif function_name == "cancel_bookings":
                     target_date_str = function_args.get("target_date")
                     try:
-                        cancelled_count = cancel_calendar_events(db, str(config.id), from_number, target_date_str)
+                        cancelled_count = await cancel_calendar_events(db, str(config.id), from_number, target_date_str)
                         if cancelled_count > 0:
                             tool_result = f"Successfully cancelled {cancelled_count} booking(s) for {target_date_str}."
                             # Notify owner about cancellation
@@ -983,7 +1077,7 @@ async def _handle_customer_message(
 
                 elif function_name == "check_customer_bookings":
                     target_date_str = function_args.get("target_date")
-                    existing_bookings = slot_check_customer_bookings(db, str(config.id), from_number, target_date_str)
+                    existing_bookings = await slot_check_customer_bookings(db, str(config.id), from_number, target_date_str)
                     if existing_bookings != "None":
                         tool_result = f"The customer currently has appointments at: {existing_bookings}."
                     else:
@@ -1026,7 +1120,7 @@ async def _handle_customer_message(
 
     should_escalate, reason, severity = _should_escalate(question, len(chunks), reply)
     if should_escalate and reason:
-        _create_escalation(
+        await _create_escalation(
             db=db,
             conversation=conversation,
             user_id=owner.id,
@@ -1054,27 +1148,29 @@ async def list_conversations(
     manual_only: bool = Query(False),
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    q = db.query(WhatsAppConversation)
-    if user_id:
-        q = q.filter(WhatsAppConversation.user_id == user_id)
+    q = select(WhatsAppConversation).filter(WhatsAppConversation.user_id == current_user.id)
     if manual_only:
         q = q.filter(WhatsAppConversation.manual_mode.is_(True))
 
-    conversations = q.order_by(WhatsAppConversation.last_message_at.desc()).offset(offset).limit(limit).all()
+    q = q.order_by(WhatsAppConversation.last_message_at.desc()).offset(offset).limit(limit)
+    res = await db.execute(q)
+    conversations = res.scalars().all()
 
     open_escalation_map: dict[UUID, dict] = {}
     if conversations:
         conv_ids = [c.id for c in conversations]
-        open_escalations = (
-            db.query(WhatsAppEscalation)
+        stmt_esc = (
+            select(WhatsAppEscalation)
             .filter(
                 WhatsAppEscalation.conversation_id.in_(conv_ids),
                 WhatsAppEscalation.status == "open",
             )
-            .all()
         )
+        res_esc = await db.execute(stmt_esc)
+        open_escalations = res_esc.scalars().all()
         for esc in open_escalations:
             open_escalation_map[esc.conversation_id] = {
                 "id": str(esc.id),
@@ -1111,20 +1207,26 @@ async def list_conversation_messages(
     conversation_id: UUID,
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    conversation = db.query(WhatsAppConversation).filter(WhatsAppConversation.id == conversation_id).first()
+    res_conv = await db.execute(select(WhatsAppConversation).filter(
+        WhatsAppConversation.id == conversation_id,
+        WhatsAppConversation.user_id == current_user.id
+    ))
+    conversation = res_conv.scalar_one_or_none()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
-    items = (
-        db.query(WhatsAppMessage)
+    stmt = (
+        select(WhatsAppMessage)
         .filter(WhatsAppMessage.conversation_id == conversation_id)
         .order_by(WhatsAppMessage.created_at.asc())
         .offset(offset)
         .limit(limit)
-        .all()
     )
+    res_msg = await db.execute(stmt)
+    items = res_msg.scalars().all()
     return {
         "conversation_id": str(conversation_id),
         "items": [
@@ -1148,16 +1250,21 @@ async def list_conversation_messages(
 async def update_manual_mode(
     conversation_id: UUID,
     payload: ManualModeUpdate,
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    conversation = db.query(WhatsAppConversation).filter(WhatsAppConversation.id == conversation_id).first()
+    res_conv = await db.execute(select(WhatsAppConversation).filter(
+        WhatsAppConversation.id == conversation_id,
+        WhatsAppConversation.user_id == current_user.id
+    ))
+    conversation = res_conv.scalar_one_or_none()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     conversation.manual_mode = payload.manual_mode
     conversation.updated_at = _utcnow()
-    db.commit()
-    db.refresh(conversation)
+    await db.commit()
+    await db.refresh(conversation)
 
     return {
         "conversation_id": str(conversation.id),
@@ -1169,9 +1276,14 @@ async def update_manual_mode(
 async def send_manual_reply(
     conversation_id: UUID,
     payload: ManualReplyRequest,
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    conversation = db.query(WhatsAppConversation).filter(WhatsAppConversation.id == conversation_id).first()
+    res_conv = await db.execute(select(WhatsAppConversation).filter(
+        WhatsAppConversation.id == conversation_id,
+        WhatsAppConversation.user_id == current_user.id
+    ))
+    conversation = res_conv.scalar_one_or_none()
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -1202,15 +1314,16 @@ async def list_escalations(
     status: Optional[str] = Query("open"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    q = db.query(WhatsAppEscalation)
-    if user_id:
-        q = q.filter(WhatsAppEscalation.user_id == user_id)
+    q = select(WhatsAppEscalation).filter(WhatsAppEscalation.user_id == current_user.id)
     if status:
         q = q.filter(WhatsAppEscalation.status == status)
 
-    items = q.order_by(WhatsAppEscalation.created_at.desc()).offset(offset).limit(limit).all()
+    q = q.order_by(WhatsAppEscalation.created_at.desc()).offset(offset).limit(limit)
+    res = await db.execute(q)
+    items = res.scalars().all()
     return {
         "items": [
             {
@@ -1234,9 +1347,14 @@ async def list_escalations(
 async def resolve_escalation(
     escalation_id: UUID,
     payload: EscalationResolveRequest,
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    escalation = db.query(WhatsAppEscalation).filter(WhatsAppEscalation.id == escalation_id).first()
+    res_esc = await db.execute(select(WhatsAppEscalation).filter(
+        WhatsAppEscalation.id == escalation_id,
+        WhatsAppEscalation.user_id == current_user.id
+    ))
+    escalation = res_esc.scalar_one_or_none()
     if not escalation:
         raise HTTPException(status_code=404, detail="Escalation not found")
 
@@ -1245,8 +1363,8 @@ async def resolve_escalation(
     if payload.notes:
         escalation.notes = payload.notes
 
-    db.commit()
-    db.refresh(escalation)
+    await db.commit()
+    await db.refresh(escalation)
 
     return {
         "id": str(escalation.id),
@@ -1256,16 +1374,19 @@ async def resolve_escalation(
 
 
 @router.post("/bot-config")
-async def upsert_bot_config(payload: BotConfigUpsertRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.id == payload.user_id).first()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+async def upsert_bot_config(
+    payload: BotConfigUpsertRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    # Ensure they can only update their own bot config unless they are a superuser
+    if payload.user_id != current_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Cannot assign bot config to another user")
 
-    existing = (
-        db.query(WhatsAppBotConfig)
-        .filter(WhatsAppBotConfig.phone_number_id == payload.phone_number_id)
-        .first()
-    )
+    stmt = select(WhatsAppBotConfig).filter(WhatsAppBotConfig.phone_number_id == payload.phone_number_id)
+    res = await db.execute(stmt)
+    existing = res.scalar_one_or_none()
+
     if existing:
         existing.user_id = payload.user_id
         existing.owner_phone_number = payload.owner_phone_number
@@ -1273,8 +1394,8 @@ async def upsert_bot_config(payload: BotConfigUpsertRequest, db: Session = Depen
         existing.use_case_type = payload.use_case_type
         existing.is_active = payload.is_active
         existing.updated_at = _utcnow()
-        db.commit()
-        db.refresh(existing)
+        await db.commit()
+        await db.refresh(existing)
         cfg = existing
     else:
         cfg = WhatsAppBotConfig(
@@ -1286,8 +1407,8 @@ async def upsert_bot_config(payload: BotConfigUpsertRequest, db: Session = Depen
             is_active=payload.is_active,
         )
         db.add(cfg)
-        db.commit()
-        db.refresh(cfg)
+        await db.commit()
+        await db.refresh(cfg)
 
     return {
         "data": {
@@ -1304,23 +1425,17 @@ async def upsert_bot_config(payload: BotConfigUpsertRequest, db: Session = Depen
 
 @router.get("/bot-config")
 async def get_bot_config(
-    db: Session = Depends(get_db),
-    user_id: Optional[str] = Query(None, alias="user_id"),
-    x_user_id: Optional[str] = Query(None),
-    request: Request = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    """Get bot config for a user. Accepts user_id as query param or 'user-id' header."""
-    uid = user_id or x_user_id
-    if not uid and request:
-        uid = request.headers.get("user-id")
-    if not uid:
-        raise HTTPException(status_code=400, detail="user_id is required")
-
-    config = (
-        db.query(WhatsAppBotConfig)
-        .filter(WhatsAppBotConfig.user_id == uid, WhatsAppBotConfig.is_active.is_(True))
-        .first()
+    """Get bot config for the currently logged in user."""
+    stmt = (
+        select(WhatsAppBotConfig)
+        .filter(WhatsAppBotConfig.user_id == current_user.id, WhatsAppBotConfig.is_active.is_(True))
     )
+    res = await db.execute(stmt)
+    config = res.scalar_one_or_none()
+    
     if not config:
         return {"data": None}
 
@@ -1340,10 +1455,13 @@ async def get_bot_config(
 @router.get("/bot-config/users")
 async def list_available_users(
     limit: int = Query(20, ge=1, le=200),
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """Utility endpoint for frontend setup screens to pick a valid user_id."""
-    users = db.query(User).order_by(User.created_at.desc()).limit(limit).all()
+    # Note: Using AsyncSession logic
+    res = await db.execute(select(User).filter(User.id == current_user.id).limit(limit))
+    users = res.scalars().all()
     return {
         "items": [
             {

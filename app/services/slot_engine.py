@@ -1,7 +1,8 @@
 import json
 from datetime import datetime, timedelta
 import redis.asyncio as redis
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from app.db.models import SlotConfig
 from app.core.config import settings
 
@@ -9,13 +10,14 @@ from app.core.config import settings
 _redis_url = settings.REDIS_URL
 redis_client = redis.from_url(_redis_url)
 
-async def generate_available_slots(db: Session, slot_config_id: str, target_date: datetime):
+async def generate_available_slots(db: AsyncSession, slot_config_id: str, target_date: datetime):
     """
     Given a merchant's SlotConfig and a date, generates all mathematically 
     possible slots based on their working hours and duration.
     Does NOT check Google Calendar yet.
     """
-    config = db.query(SlotConfig).filter(SlotConfig.id == slot_config_id).first()
+    res = await db.execute(select(SlotConfig).filter(SlotConfig.id == slot_config_id))
+    config = res.scalar_one_or_none()
     if not config:
         return []
 
@@ -54,14 +56,15 @@ async def generate_available_slots(db: Session, slot_config_id: str, target_date
     return possible_slots
 
 
-async def get_final_available_slots(db: Session, bot_config_id: str, target_date: datetime):
+async def get_final_available_slots(db: AsyncSession, bot_config_id: str, target_date: datetime):
     """
     1. Gets mathematical slots from rules.
     2. Queries Google Calendar for busy periods.
     3. Filters busy slots out.
     """
     from app.db.models import WhatsAppBotConfig
-    bot_config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id).first()
+    res = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id))
+    bot_config = res.scalar_one_or_none()
     
     if not bot_config or not bot_config.slot_config_id:
         return []
@@ -72,7 +75,7 @@ async def get_final_available_slots(db: Session, bot_config_id: str, target_date
 
     # Get live Google Calendar service
     from app.api.calendar import get_calendar_service
-    service = get_calendar_service(db, bot_config_id)
+    service = await get_calendar_service(db, bot_config_id)
     if not service:
         # If they haven't connected a calendar, everything mathematically generated is "free"
         return possible_slots
@@ -154,7 +157,7 @@ async def release_slot_lock(slot_config_id: str, slot_start_time: str, customer_
         await redis_client.delete(lock_key)
 
 
-async def create_calendar_event(db: Session, bot_config_id: str, customer_phone: str, date_time_str: str) -> bool:
+async def create_calendar_event(db: AsyncSession, bot_config_id: str, customer_phone: str, date_time_str: str) -> bool:
     """
     Creates the actual event in Google Calendar once the slot is locked.
     date_time_str should be 'YYYY-MM-DD HH:MM'
@@ -163,14 +166,16 @@ async def create_calendar_event(db: Session, bot_config_id: str, customer_phone:
     from app.api.calendar import get_calendar_service
     import pytz
     
-    bot_config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id).first()
+    bot_res = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id))
+    bot_config = bot_res.scalar_one_or_none()
     if not bot_config or not bot_config.slot_config_id:
         return False
         
-    slot_config = db.query(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id).first()
+    slot_res = await db.execute(select(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id))
+    slot_config = slot_res.scalar_one_or_none()
     duration_mins = slot_config.slot_duration_minutes if slot_config else 15
     
-    service = get_calendar_service(db, bot_config_id)
+    service = await get_calendar_service(db, bot_config_id)
     if not service:
         # No calendar connected, we just pretend it succeeded (it's locked in our DB conceptually)
         return True
@@ -200,7 +205,7 @@ async def create_calendar_event(db: Session, bot_config_id: str, customer_phone:
         return False
 
 
-def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str, target_date_str: str) -> int:
+async def cancel_calendar_events(db: AsyncSession, bot_config_id: str, customer_phone: str, target_date_str: str) -> int:
     """
     Cancel (delete) all Google Calendar events for a specific customer phone on a given date.
     target_date_str should be 'YYYY-MM-DD'.
@@ -210,7 +215,7 @@ def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str,
     from app.api.calendar import get_calendar_service
     import pytz
 
-    service = get_calendar_service(db, bot_config_id)
+    service = await get_calendar_service(db, bot_config_id)
     if not service:
         return 0
 
@@ -220,22 +225,25 @@ def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str,
         day_end = day_start + timedelta(days=1)
 
         # Search for events on that day that match the customer phone
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=day_start.isoformat(),
-            timeMax=day_end.isoformat(),
-            q=customer_phone,  # Search by customer phone in event summary/description
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
+        list_kwargs = {
+            'calendarId': 'primary',
+            'timeMin': day_start.isoformat(),
+            'timeMax': day_end.isoformat(),
+            'singleEvents': True,
+            'orderBy': 'startTime'
+        }
+        if customer_phone != "ALL":
+            list_kwargs['q'] = customer_phone  # Search by customer phone in event summary/description
+
+        events_result = service.events().list(**list_kwargs).execute()
 
         events = events_result.get('items', [])
         cancelled = 0
         for event in events:
             summary = event.get('summary', '')
             description = event.get('description', '')
-            # Only delete events that belong to this customer
-            if customer_phone in summary or customer_phone in description:
+            # Only delete events that belong to this customer (or all if "ALL")
+            if customer_phone == "ALL" or customer_phone in summary or customer_phone in description:
                 service.events().delete(calendarId='primary', eventId=event['id']).execute()
                 cancelled += 1
 
@@ -245,7 +253,7 @@ def cancel_calendar_events(db: Session, bot_config_id: str, customer_phone: str,
         return 0
 
 
-def check_customer_bookings(db: Session, bot_config_id: str, customer_phone: str, target_date_str: str) -> str:
+async def check_customer_bookings(db: AsyncSession, bot_config_id: str, customer_phone: str, target_date_str: str) -> str:
     """
     Check if a specific customer has any Google Calendar events on a given date.
     Returns a string list of booked times, or 'None'.
@@ -253,7 +261,7 @@ def check_customer_bookings(db: Session, bot_config_id: str, customer_phone: str
     from app.api.calendar import get_calendar_service
     import pytz
 
-    service = get_calendar_service(db, bot_config_id)
+    service = await get_calendar_service(db, bot_config_id)
     if not service:
         return "None (Calendar not connected)"
 

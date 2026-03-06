@@ -7,7 +7,8 @@ from uuid import UUID
 
 import structlog
 from openai import AsyncOpenAI
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.db.models import KnowledgeChunk
@@ -43,27 +44,29 @@ async def generate_embedding(text: str) -> List[float]:
 
 
 async def search_knowledge(
-    db: Session,
+    db: AsyncSession,
     query: str,
     user_id: UUID,
     limit: int = 5,
 ) -> List[KnowledgeChunk]:
     """Semantic search across knowledge_chunks for a specific user."""
     query_vec = await generate_embedding(query)
-    results = (
-        db.query(KnowledgeChunk)
+    
+    stmt = (
+        select(KnowledgeChunk)
         .filter(KnowledgeChunk.user_id == user_id)
         .order_by(KnowledgeChunk.embedding.cosine_distance(query_vec))
         .limit(limit)
-        .all()
     )
+    res = await db.execute(stmt)
+    results = res.scalars().all()
     if results:
         logger.info(f"🔍 RAG search returned {len(results)} chunks for user {user_id}")
     return results
 
 
 async def ingest_text(
-    db: Session,
+    db: AsyncSession,
     text: str,
     user_id: UUID,
     category: str = "whatsapp_knowledge",
@@ -121,6 +124,6 @@ async def ingest_text(
             error_logs.append(str(e))
 
     if ingested > 0:
-        db.commit()
+        await db.commit()
         logger.info(f"✅ Ingested {ingested} knowledge chunks for user {user_id}")
     return ingested, error_logs[0] if error_logs else None

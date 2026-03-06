@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = False
     SECRET_KEY: str = "catalyst-plugins-secret-key-change-in-production"
+    FERNET_KEY: str = "QP6wfrGXLXPI9D1wx6whvLs45dPR7hdDXscsFG-ZDYo=" # Optional defaults to dev key
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",

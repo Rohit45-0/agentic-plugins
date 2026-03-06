@@ -1,11 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import uuid
 
 from app.db.base import get_db
-from app.db.models import SlotConfig, WhatsAppBotConfig
+from app.api.deps import get_current_user
+from app.db.models import SlotConfig, WhatsAppBotConfig, User
 
 router = APIRouter()
 
@@ -22,36 +24,39 @@ class SlotConfigUpdateRequest(BaseModel):
 @router.post("/config")
 async def upsert_slot_config(
     payload: SlotConfigUpdateRequest,
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Creates or updates the working hours and booking rules for a specific WhatsApp bot.
     """
     try:
-        user_uuid = uuid.UUID(payload.user_id)
+        user_uuid = current_user.id
         bot_uuid = uuid.UUID(payload.bot_config_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user_id or bot_config_id format")
+        raise HTTPException(status_code=400, detail="Invalid bot_config_id format")
 
     # Verify bot config exists
-    bot_config = db.query(WhatsAppBotConfig).filter(
+    res_bot = await db.execute(select(WhatsAppBotConfig).filter(
         WhatsAppBotConfig.id == bot_uuid,
-        WhatsAppBotConfig.user_id == user_uuid
-    ).first()
+        WhatsAppBotConfig.user_id == current_user.id
+    ))
+    bot_config = res_bot.scalar_one_or_none()
 
     if not bot_config:
         raise HTTPException(status_code=404, detail="Bot config not found for this user")
 
     # Check if a SlotConfig already exists for this bot
     if bot_config.slot_config_id:
-        slot_config = db.query(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id).first()
+        res_slot = await db.execute(select(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id))
+        slot_config = res_slot.scalar_one_or_none()
         if not slot_config:
             # Fallback if ID is present but record was deleted
             slot_config = SlotConfig(
                 user_id=user_uuid,
             )
             db.add(slot_config)
-            db.flush()
+            await db.flush()
             bot_config.slot_config_id = slot_config.id
     else:
         # Create new slot config
@@ -59,7 +64,7 @@ async def upsert_slot_config(
             user_id=user_uuid,
         )
         db.add(slot_config)
-        db.flush()
+        await db.flush()
         bot_config.slot_config_id = slot_config.id
 
     # Update fields
@@ -67,7 +72,7 @@ async def upsert_slot_config(
     slot_config.slot_duration_minutes = payload.slot_duration_minutes
     slot_config.max_capacity_per_slot = payload.max_capacity_per_slot
 
-    db.commit()
+    await db.commit()
 
     return {
         "status": "success",
@@ -83,7 +88,8 @@ async def upsert_slot_config(
 @router.get("/config/{bot_config_id}")
 async def get_slot_config(
     bot_config_id: str,
-    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Retrieves the booking rules for a specific bot.
@@ -93,14 +99,19 @@ async def get_slot_config(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid bot_config_id format")
 
-    bot_config = db.query(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_uuid).first()
+    res_bot = await db.execute(select(WhatsAppBotConfig).filter(
+        WhatsAppBotConfig.id == bot_uuid,
+        WhatsAppBotConfig.user_id == current_user.id
+    ))
+    bot_config = res_bot.scalar_one_or_none()
     if not bot_config:
         raise HTTPException(status_code=404, detail="Bot config not found")
         
     if not bot_config.slot_config_id:
         return {"data": None}
         
-    slot_config = db.query(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id).first()
+    res_slot = await db.execute(select(SlotConfig).filter(SlotConfig.id == bot_config.slot_config_id))
+    slot_config = res_slot.scalar_one_or_none()
     if not slot_config:
         return {"data": None}
         

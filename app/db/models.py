@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     JSON,
     UniqueConstraint,
+    Index,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -53,6 +54,16 @@ class KnowledgeChunk(Base):
     source_id = Column(String, nullable=True)
     confidence_score = Column(Float, default=1.0)
     created_at = Column(DateTime, server_default=func.now())
+    
+    __table_args__ = (
+        Index(
+            "ix_knowledge_chunk_embedding",
+            embedding,
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
 
 
 class WhatsAppBotConfig(Base):
