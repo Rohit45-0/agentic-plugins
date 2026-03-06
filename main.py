@@ -39,6 +39,11 @@ app = FastAPI(
     default_response_class=ORJSONResponse,
 )
 
+@app.get("/health")
+def read_health():
+    return {"status": "ok", "version": "fix-deployment-v4"}
+
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
