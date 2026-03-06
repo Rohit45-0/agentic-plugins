@@ -178,8 +178,8 @@ async def _resolve_owner_context(db: AsyncSession, phone_number_id: Optional[str
         owner = res_owner.scalar_one_or_none()
 
     if owner is None:
-        res_first = await db.execute(select(User))
-        owner = res_first.scalar_one() if res_first else None
+        res_first = await db.execute(select(User).limit(1))
+        owner = res_first.scalar_one_or_none()
 
     owner_phone_number = None
     if config and config.owner_phone_number:
