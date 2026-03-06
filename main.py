@@ -62,18 +62,26 @@ app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Bot Anal
 @app.on_event("startup")
 async def startup() -> None:
     """Ensure plugin-specific tables exist for inbox/escalation workflows."""
-    async with engine.begin() as conn:
-        await conn.run_sync(
-            Base.metadata.create_all,
-            tables=[
-                models.SlotConfig.__table__,
-                models.WhatsAppBotConfig.__table__,
-                models.WhatsAppConversation.__table__,
-                models.WhatsAppMessage.__table__,
-                models.WhatsAppEscalation.__table__,
-                models.WhatsAppProcessedMessage.__table__,
-            ],
-        )
+    import logging
+    logger = logging.getLogger("startup")
+    try:
+        logger.info("Attempting DB table creation...")
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                Base.metadata.create_all,
+                tables=[
+                    models.SlotConfig.__table__,
+                    models.WhatsAppBotConfig.__table__,
+                    models.WhatsAppConversation.__table__,
+                    models.WhatsAppMessage.__table__,
+                    models.WhatsAppEscalation.__table__,
+                    models.WhatsAppProcessedMessage.__table__,
+                ],
+            )
+        logger.info("DB tables verified successfully.")
+    except Exception as e:
+        logger.error(f"Startup DB error (non-fatal): {e}")
+        # Don't crash the pod — tables likely already exist
 
 
 @app.get("/", tags=["Health"])

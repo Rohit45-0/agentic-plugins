@@ -12,8 +12,17 @@ _engine_kwargs = {
     },
 }
 
-# Convert sync URL to asyncpg
-async_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+# Convert any PostgreSQL URL variant to asyncpg
+_raw_url = settings.DATABASE_URL
+if _raw_url.startswith("postgresql+asyncpg://"):
+    async_url = _raw_url  # already correct
+elif _raw_url.startswith("postgresql://"):
+    async_url = _raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif _raw_url.startswith("postgres://"):
+    async_url = _raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
+else:
+    async_url = _raw_url  # fallback
+
 engine = create_async_engine(async_url, **_engine_kwargs)
 AsyncSessionLocal = sessionmaker(
     bind=engine,
