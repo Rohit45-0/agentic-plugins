@@ -11,3 +11,5 @@ venv/
 dist/
 build/
 .pytest_cache/
+debug_*.py
+test_*.py
