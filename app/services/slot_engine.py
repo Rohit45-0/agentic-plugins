@@ -8,6 +8,9 @@ from app.core.config import settings
 
 # Shared Redis client for locks
 _redis_url = settings.REDIS_URL
+if _redis_url.startswith("rediss://") and "ssl_cert_reqs" not in _redis_url:
+    _redis_url += "?ssl_cert_reqs=none"
+    
 redis_client = redis.from_url(_redis_url)
 
 async def generate_available_slots(db: AsyncSession, slot_config_id: str, target_date: datetime):
