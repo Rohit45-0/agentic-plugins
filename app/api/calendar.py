@@ -24,11 +24,12 @@ router = APIRouter()
 if settings.DEBUG:
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 # We need events to create bookings, readonly to check freeBusy availability,
-# and drive.readonly to read Google Docs for RAG knowledge sync
+# and drive.file to create and read the "Catalyst AI - Knowledge Base" doc
 SCOPES = [
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/drive.readonly"
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file"
 ]
 
 def _get_flow(redirect_uri: str):
@@ -125,17 +126,43 @@ async def calendar_callback(request: Request, db: AsyncSession = Depends(get_db)
     config.google_calendar_token = {
         "encrypted_data": encrypted_bytes.decode("utf-8")
     }
+
+    # Automatically create the Knowledge Base a Google Doc if they don't have one
+    if not config.google_doc_id:
+        try:
+            drive_service = build("drive", "v3", credentials=creds)
+            body = {
+                "name": f"Catalyst AI - Knowledge Base ({config.business_display_name or 'Bot'})",
+                "mimeType": "application/vnd.google-apps.document"
+            }
+            doc = drive_service.files().create(body=body, fields="id").execute()
+            config.google_doc_id = doc.get("id")
+            
+            # Put some initial template content in it
+            docs_service = build("docs", "v1", credentials=creds)
+            docs_service.documents().batchUpdate(
+                documentId=config.google_doc_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "location": {"index": 1},
+                                "text": "Welcome to your Catalyst AI Knowledge Base!\n\nWrite down your business rules, prices, menus, and any other information you want your AI bot to know about. You can update this document at any time and then click 'Sync to Bot' in your dashboard to immediately update your bot's brain."
+                            }
+                        }
+                    ]
+                }
+            ).execute()
+        except Exception as e:
+            # We don't want to crash the whole OAuth flow if doc creation fails
+            print(f"Failed to create Google Doc: {e}")
+
     await db.commit()
 
-    return {"message": "Google Calendar connected successfully! You can close this tab."}
+    return {"message": "Google Calendar and Knowledge Base connected successfully! You can close this tab."}
 
 
-async def get_calendar_service(db: AsyncSession, bot_config_id: str):
-    """
-    Step 3: Internal helper function.
-    Given a bot_config_id, returns a working Google Calendar API client.
-    Automatically uses the refresh token if the current token is expired.
-    """
+async def _get_google_creds(db: AsyncSession, bot_config_id: str) -> Credentials | None:
     res_config = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id))
     config = res_config.scalar_one_or_none()
     if not config or not config.google_calendar_token:
@@ -147,7 +174,7 @@ async def get_calendar_service(db: AsyncSession, bot_config_id: str):
         decrypted_bytes = fernet.decrypt(token_data["encrypted_data"].encode("utf-8"))
         token_data = json.loads(decrypted_bytes.decode("utf-8"))
 
-    creds = Credentials(
+    return Credentials(
         token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),
         token_uri=token_data.get("token_uri"),
@@ -155,5 +182,18 @@ async def get_calendar_service(db: AsyncSession, bot_config_id: str):
         client_secret=token_data.get("client_secret"),
         scopes=token_data.get("scopes")
     )
-    
+
+async def get_calendar_service(db: AsyncSession, bot_config_id: str):
+    creds = await _get_google_creds(db, bot_config_id)
+    if not creds: return None
     return build("calendar", "v3", credentials=creds)
+
+async def get_docs_service(db: AsyncSession, bot_config_id: str):
+    creds = await _get_google_creds(db, bot_config_id)
+    if not creds: return None
+    return build("docs", "v1", credentials=creds)
+
+async def get_drive_service(db: AsyncSession, bot_config_id: str):
+    creds = await _get_google_creds(db, bot_config_id)
+    if not creds: return None
+    return build("drive", "v3", credentials=creds)

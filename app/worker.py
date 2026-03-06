@@ -35,7 +35,7 @@ celery_app.conf.update(
 def on_worker_process_init(**kwargs):
     from app.db.base import engine
     engine.sync_engine.dispose()
-    logger.info("✅ Reinitialized SQLAlchemy engine for the worker process")
+    logger.info("[OK] Reinitialized SQLAlchemy engine for the worker process")
 
 
 @worker_ready.connect
