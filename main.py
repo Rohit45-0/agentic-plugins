@@ -57,12 +57,14 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 from app.api.calendar import router as calendar_router
 from app.api.slots import router as slots_router
 from app.api.dashboard import router as dashboard_router
+from app.api.knowledge import router as knowledge_router
 
 # Register routers
 app.include_router(whatsapp_router, prefix="/api/v1/whatsapp", tags=["WhatsApp Bot"])
 app.include_router(calendar_router, prefix="/api/v1/calendar", tags=["Google Calendar"])
 app.include_router(slots_router, prefix="/api/v1/slots", tags=["Booking Slots"])
 app.include_router(dashboard_router, prefix="/api/v1/dashboard", tags=["Bot Analytics Dashboard"])
+app.include_router(knowledge_router, prefix="/api/v1/knowledge", tags=["RAG Knowledge Sync"])
 
 @app.on_event("startup")
 async def startup() -> None:

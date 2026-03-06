@@ -373,10 +373,10 @@ async def verify_webhook(
 ):
     """Meta sends a GET here once to verify we own the webhook URL."""
     if hub_mode == "subscribe" and hub_verify_token == settings.WHATSAPP_VERIFY_TOKEN:
-        logger.info("✅ Meta WhatsApp Webhook verified!")
+        logger.info("[OK] Meta WhatsApp Webhook verified!")
         return int(hub_challenge)
 
-    logger.warning("❌ Webhook verification failed: token mismatch")
+    logger.warning("[FAIL] Webhook verification failed: token mismatch")
     raise HTTPException(status_code=403, detail="Verification token mismatch")
 
 
