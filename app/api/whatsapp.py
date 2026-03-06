@@ -591,21 +591,25 @@ async def _handle_owner_message(
             intent_raw = f"SAVE|{text_body}"
 
         # Parse intent
+        intent_type = "SAVE"
+        intent_content = text_body
+        extra_content = ""
+        
         if "|" in intent_raw:
-            parts = intent_raw.split("|", 1)
-            if intent_raw.startswith("CANCEL|") and len(intent_raw.split("|")) >= 3:
-                parts = intent_raw.split("|", 2)
-                intent_type = parts[0].strip().upper()
+            parts = intent_raw.split("|")
+            intent_type = parts[0].strip().upper()
+            
+            if intent_type == "CANCEL" and len(parts) >= 3:
+                # Format: CANCEL|<phone>|<date>
                 intent_content = parts[1].strip()
-                extra_content = parts[2].strip() if len(parts) > 2 else ""
+                extra_content = parts[2].strip()
+            elif len(parts) >= 2:
+                # Format: TYPE|<content>
+                intent_content = parts[1].strip()
             else:
-                intent_type = parts[0].strip().upper()
-                intent_content = parts[1].strip()
-                extra_content = ""
+                intent_content = intent_raw
         else:
-            intent_type = "SAVE"
-            intent_content = text_body
-            extra_content = ""
+            intent_content = intent_raw
 
         # Handle each intent
         if intent_type == "GREET":

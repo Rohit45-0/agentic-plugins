@@ -8,7 +8,6 @@ _engine_kwargs = {
     "pool_recycle": 300,
     "connect_args": {
         "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
     },
 }
 
