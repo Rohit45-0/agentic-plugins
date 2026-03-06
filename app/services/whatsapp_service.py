@@ -37,9 +37,9 @@ async def send_text_message(to_number: str, message: str, phone_number_id: Optio
         response = await client.post(url, headers=headers, json=payload)
 
     if response.is_success:
-        logger.info(f"✅ WhatsApp message sent to {to_number}")
+        logger.info(f"[OK] WhatsApp message sent to {to_number}")
     else:
-        logger.error(f"❌ Failed to send WhatsApp message: {response.status_code} - {response.text}")
+        logger.error(f"[FAIL] Failed to send WhatsApp message: {response.status_code} - {response.text}")
 
     try:
         return response.json()

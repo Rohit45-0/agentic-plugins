@@ -61,7 +61,7 @@ async def search_knowledge(
     res = await db.execute(stmt)
     results = res.scalars().all()
     if results:
-        logger.info(f"🔍 RAG search returned {len(results)} chunks for user {user_id}")
+        logger.info(f"[SEARCH] RAG search returned {len(results)} chunks for user {user_id}")
     return results
 
 
@@ -125,5 +125,5 @@ async def ingest_text(
 
     if ingested > 0:
         await db.commit()
-        logger.info(f"✅ Ingested {ingested} knowledge chunks for user {user_id}")
+        logger.info(f"[OK] Ingested {ingested} knowledge chunks for user {user_id}")
     return ingested, error_logs[0] if error_logs else None
