@@ -1389,7 +1389,13 @@ async def upsert_bot_config(
     if payload.user_id != current_user.id and not current_user.is_superuser:
         raise HTTPException(status_code=403, detail="Cannot assign bot config to another user")
 
-    stmt = select(WhatsAppBotConfig).filter(WhatsAppBotConfig.phone_number_id == payload.phone_number_id)
+    # Auto-assign default phone number if "auto" is passed (simplified onboarding)
+    phone_id = payload.phone_number_id
+    if phone_id == "auto":
+        phone_id = settings.WHATSAPP_PHONE_NUMBER_ID or "0000000000000000"
+
+    # Look up existing config by user_id first (shared number model)
+    stmt = select(WhatsAppBotConfig).filter(WhatsAppBotConfig.user_id == payload.user_id)
     res = await db.execute(stmt)
     existing = res.scalar_one_or_none()
 
@@ -1406,7 +1412,7 @@ async def upsert_bot_config(
     else:
         cfg = WhatsAppBotConfig(
             user_id=payload.user_id,
-            phone_number_id=payload.phone_number_id,
+            phone_number_id=phone_id,
             owner_phone_number=payload.owner_phone_number,
             business_display_name=payload.business_display_name,
             use_case_type=payload.use_case_type,
@@ -1454,6 +1460,8 @@ async def get_bot_config(
             "business_display_name": config.business_display_name,
             "use_case_type": config.use_case_type,
             "is_active": config.is_active,
+            "google_doc_id": config.google_doc_id,
+            "has_calendar": config.google_calendar_token is not None,
         }
     }
 
