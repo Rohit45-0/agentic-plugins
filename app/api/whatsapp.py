@@ -81,6 +81,7 @@ class BotConfigUpsertRequest(BaseModel):
     user_id: UUID
     phone_number_id: str
     owner_phone_number: Optional[str] = None
+    whatsapp_phone_number: Optional[str] = None
     business_display_name: Optional[str] = None
     use_case_type: str = "restaurant"
     is_active: bool = True
@@ -1402,6 +1403,7 @@ async def upsert_bot_config(
     if existing:
         existing.user_id = payload.user_id
         existing.owner_phone_number = payload.owner_phone_number
+        existing.whatsapp_phone_number = payload.whatsapp_phone_number
         existing.business_display_name = payload.business_display_name
         existing.use_case_type = payload.use_case_type
         existing.is_active = payload.is_active
@@ -1414,6 +1416,7 @@ async def upsert_bot_config(
             user_id=payload.user_id,
             phone_number_id=phone_id,
             owner_phone_number=payload.owner_phone_number,
+            whatsapp_phone_number=payload.whatsapp_phone_number,
             business_display_name=payload.business_display_name,
             use_case_type=payload.use_case_type,
             is_active=payload.is_active,
@@ -1428,6 +1431,7 @@ async def upsert_bot_config(
             "user_id": str(cfg.user_id),
             "phone_number_id": cfg.phone_number_id,
             "owner_phone_number": cfg.owner_phone_number,
+            "whatsapp_phone_number": cfg.whatsapp_phone_number,
             "business_display_name": cfg.business_display_name,
             "use_case_type": cfg.use_case_type,
             "is_active": cfg.is_active,
@@ -1457,6 +1461,7 @@ async def get_bot_config(
             "user_id": str(config.user_id),
             "phone_number_id": config.phone_number_id,
             "owner_phone_number": config.owner_phone_number,
+            "whatsapp_phone_number": config.whatsapp_phone_number,
             "business_display_name": config.business_display_name,
             "use_case_type": config.use_case_type,
             "is_active": config.is_active,

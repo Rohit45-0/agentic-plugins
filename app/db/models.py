@@ -72,8 +72,9 @@ class WhatsAppBotConfig(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    phone_number_id = Column(String, unique=True, nullable=False, index=True)
+    phone_number_id = Column(String, nullable=False, index=True)
     owner_phone_number = Column(String, nullable=True, index=True)
+    whatsapp_phone_number = Column(String, nullable=True)
     business_display_name = Column(String, nullable=True)
     use_case_type = Column(String, nullable=False, default="restaurant") # Add use case type
     slot_config_id = Column(UUID(as_uuid=True), ForeignKey("slot_configs.id"), nullable=True)
