@@ -131,8 +131,21 @@ def _extract_text_from_message(msg: dict) -> str:
     return ""
 
 
+def _normalize_phone(phone: Optional[str]) -> str:
+    """Strip leading + and country code 91 to get the bare 10-digit number for comparison."""
+    if not phone:
+        return ""
+    p = phone.strip().replace("+", "").replace(" ", "").replace("-", "")
+    # If it starts with 91 and is 12 digits, strip the country code
+    if p.startswith("91") and len(p) == 12:
+        return p[2:]
+    return p
+
+
 def _is_owner_message(from_number: str, owner_phone_number: Optional[str]) -> bool:
-    return bool(owner_phone_number and from_number == owner_phone_number)
+    if not owner_phone_number or not from_number:
+        return False
+    return _normalize_phone(from_number) == _normalize_phone(owner_phone_number)
 
 
 def _escalation_keywords() -> set[str]:
@@ -159,9 +172,18 @@ def _should_escalate(question: str, rag_chunks_found: int, bot_reply: str) -> tu
     return False, None, "low"
 
 
-async def _resolve_owner_context(db: AsyncSession, phone_number_id: Optional[str]) -> tuple[Optional[User], Optional[WhatsAppBotConfig], Optional[str]]:
+async def _resolve_owner_context(
+    db: AsyncSession, phone_number_id: Optional[str], from_number: Optional[str] = None
+) -> tuple[Optional[User], Optional[WhatsAppBotConfig], Optional[str]]:
+    """Resolve the owner, config, and owner phone number for a webhook message.
+    
+    When multiple configs share the same phone_number_id (shared Meta number model),
+    we match by checking if from_number is the owner of any of those configs.
+    If no owner match, we pick the first active config (default).
+    """
     config = None
     owner = None
+    configs = []
 
     if phone_number_id:
         stmt = (
@@ -172,7 +194,19 @@ async def _resolve_owner_context(db: AsyncSession, phone_number_id: Optional[str
             )
         )
         res = await db.execute(stmt)
-        config = res.scalar_one_or_none()
+        configs = res.scalars().all()
+
+    # If we have multiple configs sharing the same phone_number_id,
+    # try to match the from_number to a specific owner's phone number
+    if from_number and len(configs) > 1:
+        for c in configs:
+            if c.owner_phone_number and _normalize_phone(from_number) == _normalize_phone(c.owner_phone_number):
+                config = c
+                break
+    
+    # If no specific match found, pick the first config (or the only one)
+    if config is None and configs:
+        config = configs[0]
 
     if config:
         res_owner = await db.execute(select(User).filter(User.id == config.user_id))
@@ -409,12 +443,16 @@ async def _process_payload(payload: dict):
                     metadata = value.get("metadata", {})
                     phone_number_id = metadata.get("phone_number_id") or settings.WHATSAPP_PHONE_NUMBER_ID
 
-                    owner, config, owner_phone_number = await _resolve_owner_context(db, phone_number_id)
-                    if owner is None:
-                        logger.warning("No owner found for incoming message batch")
-                        continue
-
                     for msg in value.get("messages", []) or []:
+                        from_number = msg.get("from", "")
+                        # Resolve owner per-message so the right config is picked
+                        owner, config, owner_phone_number = await _resolve_owner_context(
+                            db, phone_number_id, from_number=from_number
+                        )
+                        if owner is None:
+                            logger.warning("No owner found for incoming message", from_number=from_number)
+                            continue
+
                         await _process_single_message(
                             db=db,
                             owner=owner,
