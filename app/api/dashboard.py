@@ -108,3 +108,71 @@ async def get_dashboard_analytics(
             "total_bookings_estimated": total_conversations // 3 # Placeholder math
         }
     }
+
+@router.get("/upcoming-bookings")
+async def get_upcoming_bookings(
+    bot_config_id: str = Query(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Fetches upcoming bookings directly from the synced Google Calendar API.
+    """
+    if not bot_config_id:
+        # Default to user's first bot config if not provided
+        res_bot = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.user_id == current_user.id).limit(1))
+        bot = res_bot.scalar_one_or_none()
+        if not bot:
+            return {"status": "success", "data": []}
+        bot_config_id = str(bot.id)
+
+    from app.api.calendar import get_calendar_service
+    import datetime
+    import pytz
+
+    service = await get_calendar_service(db, bot_config_id)
+    if not service:
+        return {"status": "success", "data": []}
+
+    try:
+        ist = pytz.timezone("Asia/Kolkata")
+        now = ist.localize(datetime.datetime.now())
+        end = now + datetime.timedelta(days=7)
+        
+        events_result = service.events().list(
+            calendarId='primary', 
+            timeMin=now.isoformat(), 
+            timeMax=end.isoformat(), 
+            singleEvents=True, 
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        bookings = []
+        for e in events:
+            # Format nicely for the frontend
+            summary = e.get("summary", "Unknown Booking")
+            start_dt = e["start"].get("dateTime")
+            if not start_dt:
+                continue
+                
+            # e.g., '2026-03-10T15:15:00+05:30' -> display friendly text
+            dt_obj = datetime.datetime.fromisoformat(start_dt)
+            formatted_date = dt_obj.strftime("%b %d, %Y")
+            formatted_time = dt_obj.strftime("%I:%M %p")
+            
+            bookings.append({
+                "id": e.get("id"),
+                "summary": summary,
+                "date": formatted_date,
+                "time": formatted_time,
+                "raw_dt": start_dt
+            })
+            
+        return {
+            "status": "success",
+            "data": bookings
+        }
+    except Exception as e:
+        print(f"Error fetching calendar for dashboard: {e}")
+        return {"status": "success", "data": []}
