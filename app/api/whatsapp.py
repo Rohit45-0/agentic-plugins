@@ -87,6 +87,15 @@ class BotConfigUpsertRequest(BaseModel):
     is_active: bool = True
 
 
+class SystemAlertRequest(BaseModel):
+    user_id: str
+    phone_number: str
+    phone_number_id: Optional[str] = None
+    video_url: Optional[str] = None
+    image_url: Optional[str] = None
+    message: Optional[str] = None
+
+
 def _get_llm_client() -> AsyncOpenAI:
     global _llm_client
     if _llm_client is None:
@@ -596,6 +605,7 @@ async def _handle_owner_message(
             
         ex_cancel = "'cancel booking for 9876543210 on 2026-03-02' → CANCEL|<phone_number>|<YYYY-MM-DD>"
         ex_cancel_all = "'cancel all bookings for today' → CANCEL|ALL|<YYYY-MM-DD>"
+        ex_gen = "'create a video for paneer tikka' → GENERATE|<type>|<prompt>"
 
         # Use AI to understand owner intent
         client = _get_llm_client()
@@ -613,9 +623,10 @@ async def _handle_owner_message(
                         f"REMOVE|<item to remove> - when owner wants to remove/delete something (e.g. {ex_rm})\n"
                         f"QUERY|<question> - when owner is asking a question (e.g. {ex_query})\n"
                         f"SAVE|<info> - when owner shares business info/facts to remember (e.g. {ex_save})\n"
-                        f"GREET|hello - when owner just says hi, hello, or tests the bot.\n"
                         f"CANCEL|<phone_number>|<date> - when owner wants to completely cancel a specific customer's booking. (e.g. {ex_cancel})\n"
                         f"CANCEL|ALL|<date> - when owner wants to cancel ALL schedule/appointments for a day. (e.g. {ex_cancel_all})\n"
+                        f"GENERATE|<type>|<prompt> - when owner wants to create marketing content like video, poster, or blog. <type> must be exactly: video, poster, or blog. (e.g. {ex_gen})\n"
+                        f"GREET|hello - ONLY if the owner just says hi or hello and NOTHING else.\n"
                         "Always clean up and format the content nicely. Support Hindi/Marathi/Hinglish.\n"
                         f"CRITICAL: The current date is {today_str}. If the user refers to 'today', 'tomorrow', or implies a date, map it to the actual YYYY-MM-DD date based on the current date: {today_str}."
                     )
@@ -640,8 +651,8 @@ async def _handle_owner_message(
             parts = intent_raw.split("|")
             intent_type = parts[0].strip().upper()
             
-            if intent_type == "CANCEL" and len(parts) >= 3:
-                # Format: CANCEL|<phone>|<date>
+            if intent_type in ("CANCEL", "GENERATE") and len(parts) >= 3:
+                # Format: CANCEL|<phone>|<date> or GENERATE|<type>|<prompt>
                 intent_content = parts[1].strip()
                 extra_content = parts[2].strip()
             elif len(parts) >= 2:
@@ -651,6 +662,21 @@ async def _handle_owner_message(
                 intent_content = intent_raw
         else:
             intent_content = intent_raw
+
+        # Hardcoded overrides to forcefully bypass AI if it hallucinated or got confused by a greeting
+        text_lower = text_body.lower()
+        if "make a poster" in text_lower or "create a poster" in text_lower or "poster for" in text_lower:
+            intent_type = "GENERATE"
+            intent_content = "poster"
+            extra_content = text_body
+        elif "make a video" in text_lower or "create a video" in text_lower or "video for" in text_lower:
+            intent_type = "GENERATE"
+            intent_content = "video"
+            extra_content = text_body
+        elif "write a blog" in text_lower or "create a blog" in text_lower or "blog post for" in text_lower:
+            intent_type = "GENERATE"
+            intent_content = "blog"
+            extra_content = text_body
 
         # Handle each intent
         if intent_type == "GREET":
@@ -743,6 +769,30 @@ async def _handle_owner_message(
             except Exception as e:
                 logger.error(f"Error cancelling bookings from owner message: {e}")
                 msg_reply = f"❌ Error cancelling bookings: {e}"
+        elif intent_type == "GENERATE":
+            gen_type = intent_content.lower() # video, poster, blog
+            prompt_text = extra_content
+            
+            import asyncio
+            import httpx
+            core_url = "http://localhost:8000/api/v1/campaigns/generate-via-bot"
+            payload = {
+                "user_id": str(owner.id),
+                "type": gen_type,
+                "prompt": prompt_text,
+                "phone_number": from_number,
+                "phone_number_id": phone_number_id
+            }
+            
+            async def trigger_core():
+                try:
+                    async with httpx.AsyncClient(timeout=10.0) as core_client:
+                        await core_client.post(core_url, json=payload)
+                except Exception as ex:
+                    logger.error(f"Core API generation trigger failed: {ex}")
+                    
+            asyncio.create_task(trigger_core())
+            msg_reply = f"🎬 Preparing to generate your `{gen_type}` via Catalyst Nexus Core for '{prompt_text}'.\n\nThis usually takes 1-3 minutes. I'll ping you here as soon as it's ready! 🚀"
 
         else:  # SAVE
             count, err = await rag_service.ingest_text(db, intent_content, owner.id)
@@ -1542,3 +1592,39 @@ async def list_available_users(
         ],
         "count": len(users),
     }
+
+
+@router.post("/system-alert")
+async def receive_system_alert(
+    payload: SystemAlertRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Internal webhook for core system to push generated content back to WhatsApp owner."""
+    from app.services.whatsapp_service import send_text_message, send_media_message
+    
+    if payload.message:
+        await send_text_message(
+            to_number=payload.phone_number,
+            message=payload.message,
+            phone_number_id=payload.phone_number_id
+        )
+        
+    if payload.video_url:
+        await send_media_message(
+            to_number=payload.phone_number,
+            media_url=payload.video_url,
+            media_type="video",
+            caption="🎥 Here is your generated video!",
+            phone_number_id=payload.phone_number_id
+        )
+    elif payload.image_url:
+        await send_media_message(
+            to_number=payload.phone_number,
+            media_url=payload.image_url,
+            media_type="image",
+            caption="🖼️ Here is your generated image/poster!",
+            phone_number_id=payload.phone_number_id
+        )
+        
+    return {"status": "ok"}
+

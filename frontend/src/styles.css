@@ -1,0 +1,113 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-white text-neutral-900;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-neutral-200 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-neutral-300;
+  }
+}
+
+@layer components {
+
+  /* Sidebar icon button */
+  .sidebar-icon-btn {
+    @apply flex items-center justify-center w-9 h-9 rounded-lg text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900 transition-all duration-100 cursor-pointer;
+  }
+
+  .sidebar-icon-btn.active {
+    @apply bg-neutral-900 text-white;
+  }
+
+  /* Card */
+  .cn-card {
+    @apply bg-white border border-neutral-200 rounded-xl p-5 transition-all duration-150;
+  }
+
+  .cn-card:hover {
+    @apply border-neutral-300 shadow-card;
+  }
+
+  /* Button variants */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-neutral-900 text-white text-sm font-medium rounded-lg hover:bg-neutral-800 transition-colors duration-100 cursor-pointer border-0;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-white text-neutral-700 text-sm font-medium rounded-lg border border-neutral-200 hover:bg-neutral-50 hover:border-neutral-300 transition-colors duration-100 cursor-pointer;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 text-neutral-600 text-sm font-medium rounded-lg hover:bg-neutral-100 hover:text-neutral-900 transition-colors duration-100 cursor-pointer border-0 bg-transparent;
+  }
+
+  /* Input */
+  .cn-input {
+    @apply w-full px-3 py-2 text-sm bg-white border border-neutral-200 rounded-lg text-neutral-900 placeholder-neutral-400 outline-none transition-all duration-100;
+  }
+
+  .cn-input:focus {
+    @apply border-neutral-900 ring-1 ring-neutral-900;
+  }
+
+  /* Badge / Chip */
+  .cn-badge {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 text-xs font-medium rounded-full;
+  }
+
+  .cn-badge-success {
+    @apply cn-badge bg-emerald-50 text-emerald-700 border border-emerald-200;
+  }
+
+  .cn-badge-error {
+    @apply cn-badge bg-red-50 text-red-700 border border-red-200;
+  }
+
+  .cn-badge-neutral {
+    @apply cn-badge bg-neutral-100 text-neutral-600 border border-neutral-200;
+  }
+
+  /* Page header */
+  .page-header {
+    @apply mb-6;
+  }
+
+  .page-title {
+    @apply text-xl font-semibold text-neutral-900 tracking-tight;
+  }
+
+  .page-subtitle {
+    @apply text-sm text-neutral-500 mt-0.5;
+  }
+}

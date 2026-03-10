@@ -47,6 +47,39 @@ async def send_text_message(to_number: str, message: str, phone_number_id: Optio
         return {"status_code": response.status_code, "body": response.text}
 
 
+async def send_media_message(to_number: str, media_url: str, caption: str = "", media_type: str = "image", phone_number_id: Optional[str] = None) -> dict:
+    """Send an image or video URL message via Meta API."""
+    resolved_phone_number_id = phone_number_id or settings.WHATSAPP_PHONE_NUMBER_ID
+    if not resolved_phone_number_id:
+        return {}
+
+    url = f"{GRAPH_API_BASE}/{resolved_phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {settings.WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "recipient_type": "individual",
+        "to": to_number,
+        "type": media_type,
+        media_type: {"link": media_url, "caption": caption},
+    }
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(url, headers=headers, json=payload)
+
+    if response.is_success:
+        logger.info(f"[OK] WhatsApp {media_type} message sent to {to_number}")
+    else:
+        logger.error(f"[FAIL] Failed to send WhatsApp {media_type} message: {response.text}")
+
+    try:
+        return response.json()
+    except Exception:
+        return {"status_code": response.status_code, "body": response.text}
+
+
 async def download_media(media_id: str) -> bytes:
     """
     Download a media file (image, document, audio) from Meta's servers.
