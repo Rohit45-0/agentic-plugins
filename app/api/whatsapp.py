@@ -775,7 +775,7 @@ async def _handle_owner_message(
             
             import asyncio
             import httpx
-            core_url = "http://localhost:8000/api/v1/campaigns/generate-via-bot"
+            core_url = "https://thick-dancers-scream.loca.lt/api/v1/campaigns/generate-via-bot"
             payload = {
                 "user_id": str(owner.id),
                 "type": gen_type,
@@ -786,8 +786,9 @@ async def _handle_owner_message(
             
             async def trigger_core():
                 try:
+                    headers = {"Bypass-Tunnel-Reminder": "true"}
                     async with httpx.AsyncClient(timeout=10.0) as core_client:
-                        await core_client.post(core_url, json=payload)
+                        await core_client.post(core_url, json=payload, headers=headers)
                 except Exception as ex:
                     logger.error(f"Core API generation trigger failed: {ex}")
                     
