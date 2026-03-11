@@ -161,3 +161,95 @@ class WhatsAppProcessedMessage(Base):
     wa_message_id = Column(String, unique=True, nullable=False, index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+# ─── NEW TOOLS ARCHITECTURE MODELS ───────────────────────────────────────────
+
+class Customer(Base):
+    """Centralized customer record across all verticals."""
+    __tablename__ = "customers"
+    __table_args__ = (
+        UniqueConstraint("user_id", "phone", name="uq_customer_user_phone"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True) # owner/tenant ID
+    phone = Column(String, nullable=False, index=True)
+    name = Column(String, nullable=True)
+    first_seen = Column(DateTime, server_default=func.now())
+    last_interaction = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    language_preference = Column(String, default="en")
+    notes = Column(Text, nullable=True)
+    tags = Column(JSON, nullable=True)  # Store list of strings
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Booking(Base):
+    """Universal booking tracker for all slot-based services."""
+    __tablename__ = "bookings"
+    __table_args__ = (
+        UniqueConstraint("user_id", "booking_date", "booking_time", "customer_phone", name="uq_booking_slot"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True) # Business ID
+    customer_phone = Column(String, nullable=False, index=True)
+    customer_name = Column(String, nullable=True)
+    service_type = Column(String, nullable=True)
+    
+    booking_date = Column(String, nullable=False, index=True) # e.g., "yyyy-mm-dd"
+    booking_time = Column(String, nullable=False, index=True) # e.g., "hh:mm"
+    
+    status = Column(String, nullable=False, default="holding", index=True) # holding, confirmed, completed, cancelled, no_show
+    booked_via = Column(String, nullable=False, default="whatsapp") # whatsapp, walkin, phone, app
+    
+    payment_status = Column(String, nullable=False, default="pending") # pending, paid, refunded
+    payment_id = Column(String, nullable=True) # Links to Razorpay or Payments table
+    
+    version = Column(Integer, default=1, nullable=False) # For optimistic locking
+    notes = Column(Text, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class Payment(Base):
+    """Tracks Razorpay generated links and payments."""
+    __tablename__ = "payments"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    customer_phone = Column(String, nullable=False, index=True)
+    
+    razorpay_link_id = Column(String, nullable=True, unique=True)
+    razorpay_payment_id = Column(String, nullable=True, index=True)
+    
+    amount_paise = Column(Integer, nullable=False)
+    description = Column(String, nullable=True)
+    
+    status = Column(String, nullable=False, default="created") # created, paid, expired, cancelled, refunded
+    booking_id = Column(UUID(as_uuid=True), ForeignKey("bookings.id"), nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now())
+    paid_at = Column(DateTime, nullable=True)
+
+
+class ToolLog(Base):
+    """Audit log for AI tool interactions."""
+    __tablename__ = "tool_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    
+    tool_name = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    params = Column(JSON, nullable=True)
+    result = Column(JSON, nullable=True)
+    
+    success = Column(Boolean, nullable=False, default=True)
+    duration_ms = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, server_default=func.now(), index=True)
+

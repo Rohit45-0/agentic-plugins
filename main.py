@@ -83,6 +83,10 @@ async def startup() -> None:
                     models.WhatsAppMessage.__table__,
                     models.WhatsAppEscalation.__table__,
                     models.WhatsAppProcessedMessage.__table__,
+                    models.Customer.__table__,
+                    models.Booking.__table__,
+                    models.Payment.__table__,
+                    models.ToolLog.__table__,
                 ],
             )
         logger.info("DB tables verified successfully.")
