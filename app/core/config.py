@@ -62,9 +62,10 @@ class Settings(BaseSettings):
             return f"{self.REDIS_URL}?ssl_cert_reqs=CERT_NONE"
         return self.REDIS_URL
 
-    # Google Calendar
+    # Google Workspace
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_JSON_PATH: Optional[str] = None
 
     # Razorpay Payments
     RAZORPAY_KEY_ID: Optional[str] = None
