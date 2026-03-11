@@ -677,6 +677,15 @@ async def _handle_owner_message(
             intent_type = "GENERATE"
             intent_content = "blog"
             extra_content = text_body
+        elif "research" in text_lower or "market research" in text_lower or "analyze market" in text_lower:
+            intent_type = "RESEARCH"
+            # Extract product name heuristically
+            p_name = text_lower.replace("do market research for", "").replace("market research for", "").replace("market research", "").replace("research", "").replace("analyze market for", "").strip()
+            if not p_name:
+                p_name = config.use_case_type if config else text_body
+            intent_content = p_name
+            extra_content = text_body
+
 
         # Handle each intent
         if intent_type == "GREET":
@@ -794,6 +803,29 @@ async def _handle_owner_message(
                     
             asyncio.create_task(trigger_core())
             msg_reply = f"🎬 Preparing to generate your `{gen_type}` via Catalyst Nexus Core for '{prompt_text}'.\n\nThis usually takes 1-3 minutes. I'll ping you here as soon as it's ready! 🚀"
+
+        elif intent_type == "RESEARCH":
+            import asyncio
+            import httpx
+            core_url = "https://thick-dancers-scream.loca.lt/api/v1/market-scout/research-via-bot"
+            payload = {
+                "user_id": str(owner.id),
+                "product_name": intent_content,
+                "category": config.use_case_type if config else "general",
+                "phone_number": from_number,
+                "phone_number_id": phone_number_id
+            }
+            
+            async def trigger_core_research():
+                try:
+                    headers = {"Bypass-Tunnel-Reminder": "true"}
+                    async with httpx.AsyncClient(timeout=10.0) as core_client:
+                        await core_client.post(core_url, json=payload, headers=headers)
+                except Exception as ex:
+                    logger.error(f"Core API research trigger failed: {ex}")
+                    
+            asyncio.create_task(trigger_core_research())
+            msg_reply = f"🔍 Launching Catalyst Nexus AI Market Research for '{intent_content}'.\n\nI am scraping the web for competitors, trends, and content gaps right now. I'll ping you here with the final strategic report shortly! 🚀"
 
         else:  # SAVE
             count, err = await rag_service.ingest_text(db, intent_content, owner.id)

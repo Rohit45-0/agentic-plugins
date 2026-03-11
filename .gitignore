@@ -13,3 +13,6 @@ build/
 .pytest_cache/
 debug_*.py
 test_*.py
+service-account.json
+*.json.key
+frontend/node_modules/
