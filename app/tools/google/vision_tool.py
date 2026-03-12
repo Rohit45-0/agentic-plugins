@@ -115,10 +115,11 @@ class VisionTool(BaseTool):
         # In a real scenario, we would pass 'raw_text' to the OpenAI/Langchain pipeline here.
         # For now, we return the raw text with a prompt suggestion for the AI.
         
-        system_prompt = \"\"\"
-        You are an AI order parser. Convert the following messy OCR text into a strict JSON list 
-        of items and quantities. If it looks like a medical prescription, flag it as 'prescription'.
-        \"\"\"
+        system_prompt = (
+            "You are an AI order parser. Convert the following messy OCR text into a strict JSON list "
+            "of items and quantities. If it looks like a medical prescription, flag it as 'prescription'."
+        )
+
         
         return self._format_response(
             success=True,

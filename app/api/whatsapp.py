@@ -1005,6 +1005,8 @@ async def _handle_customer_message(
         "tiffin": "daily tiffin or meal subscription service",
         "kirana": "kirana or grocery store",
         "coaching": "coaching class or tuition center",
+        "clinic": "doctor's clinic or medical practice",
+        "gym": "gym, fitness center, or yoga studio",
         "general": "local business"
     }
     
@@ -1014,6 +1016,42 @@ async def _handle_customer_message(
     today_str = datetime.now().strftime('%Y-%m-%d')
     day_of_week = datetime.now().strftime('%A')
     business_name = config.business_display_name if config else "our business"
+
+    # Vertical-specific tool instructions
+    vertical_instructions = {
+        "restaurant": (
+            "7. MENU & ORDERS: You can show the menu, check item availability, create orders, and show order history using tools.\n"
+            "8. WEATHER: You can check weather to suggest rain-day/cold-day promos.\n"
+            "9. DELIVERY: You can check delivery distance and estimate charges.\n"
+        ),
+        "tiffin": (
+            "7. MENU: You can show today's tiffin menu using the get_todays_menu tool.\n"
+            "8. SUBSCRIPTIONS: You can create, pause, and resume tiffin subscriptions for customers.\n"
+            "9. DELIVERY: You can check delivery distance using the check_delivery_distance tool.\n"
+        ),
+        "salon": (
+            "7. APPOINTMENTS: You can check salon slot availability and book appointments using salon-specific tools.\n"
+            "8. LOYALTY: You can check customer loyalty tier and next reward milestone.\n"
+        ),
+        "clinic": (
+            "7. QUEUE: You can generate a queue token for patients and show estimated wait times.\n"
+            "8. QUEUE STATUS: You can check how many patients are waiting and current token number.\n"
+        ),
+        "kirana": (
+            "7. CATALOG: You can search the store inventory for products using the search_catalog tool.\n"
+            "8. CREDIT (UDHAR): You can check customer's udhar/khata balance using get_udhar_balance.\n"
+            "9. DELIVERY: You can check delivery distance for home delivery orders.\n"
+        ),
+        "coaching": (
+            "7. ATTENDANCE: You can show a student's attendance report for any month.\n"
+            "8. FEES: You can check if the student has any pending fee invoices.\n"
+        ),
+        "gym": (
+            "7. MEMBERSHIP: You can check membership status, days remaining, and streak using check_membership.\n"
+            "8. CLASSES: You can show the class schedule and book spots in classes.\n"
+        ),
+    }
+    extra_rules = vertical_instructions.get(use_case, "")
 
     client = _get_llm_client()
     system_prompt = (
@@ -1032,8 +1070,9 @@ async def _handle_customer_message(
         "Everything in the knowledge base is meant to be shared with customers.\n"
         "4. Keep answers concise, warm, and helpful. Use emojis sparingly. Hinglish is fine if the customer uses Hindi.\n"
         "5. If the customer says 'tomorrow', calculate the actual date from today's date.\n"
-        "6. When booking, ALWAYS call check_available_slots first to show real availability, then book_slot after the customer confirms a time.\n\n"
-        
+        "6. When booking, ALWAYS call check_available_slots first to show real availability, then book_slot after the customer confirms a time.\n"
+        f"{extra_rules}"
+        "\n"
         f"=== BUSINESS KNOWLEDGE ===\n{context}\n=== END ==="
     )
 
@@ -1107,6 +1146,11 @@ async def _handle_customer_message(
             }
         }
     ]
+
+    # ── Phase 5: Inject vertical-specific tools dynamically ──
+    from app.tools.registry import get_tools_for_vertical
+    vertical_tool_schemas = get_tools_for_vertical(use_case)
+    tools.extend(vertical_tool_schemas)
 
     # Fetch last 10 messages for context
     from app.db.models import WhatsAppMessage
@@ -1223,7 +1267,17 @@ async def _handle_customer_message(
                         tool_result = f"The customer has NO appointments for {target_date_str}."
 
                 else:
-                    tool_result = "Unknown function call."
+                    # Route to vertical tool executor (Phase 5)
+                    from app.tools.registry import execute_vertical_tool
+                    tool_result = await execute_vertical_tool(
+                        use_case_type=use_case,
+                        function_name=function_name,
+                        function_args=function_args,
+                        customer_phone=from_number,
+                        customer_name=from_number,  # We use phone as name fallback
+                        spreadsheet_id=getattr(config, 'google_doc_id', None) if config else None,
+                        business_name=business_name,
+                    )
                     
                 messages.append({
                     "tool_call_id": tool_call.id,
