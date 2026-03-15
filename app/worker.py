@@ -2,9 +2,9 @@ import asyncio
 import logging
 from celery import Celery
 from celery.signals import worker_ready, task_failure, worker_process_init
+from kombu import Queue
 
 from app.core.config import settings
-from app.api.whatsapp import _process_payload
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,16 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
+    broker_connection_retry_on_startup=True,
+    task_queues=(
+        Queue("webhook_ingest"),
+        Queue("llm_reply"),
+        Queue("media"),
+    ),
+    task_routes={
+        "process_whatsapp_webhook": {"queue": "webhook_ingest"},
+        "process_whatsapp_message": {"queue": "llm_reply"},
+    },
 )
 
 
@@ -56,15 +66,43 @@ def on_task_failure(task_id, exception, traceback, **kwargs):
 )
 def process_whatsapp_webhook(self, payload: dict):
     """
-    Synchronous Celery task that wraps the async _process_payload function.
-    Retries up to 3 times on failure.
+    Fan out a webhook batch into specialized message queues.
+    """
+    try:
+        from app.api.whatsapp import _iter_payload_message_events, _select_processing_queue
+
+        dispatch_count = 0
+        for event in _iter_payload_message_events(payload):
+            msg = event.get("msg") or {}
+            queue_name = _select_processing_queue(msg)
+            process_whatsapp_message.apply_async(kwargs={"event": event}, queue=queue_name)
+            dispatch_count += 1
+        return {"status": "dispatched", "count": dispatch_count}
+    except Exception as exc:
+        logger.error(f"Task failed, retrying: {exc}", exc_info=True)
+        raise self.retry(exc=exc)
+
+
+@celery_app.task(
+    name="process_whatsapp_message",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=2,
+)
+def process_whatsapp_message(self, event: dict):
+    """
+    Process one inbound WhatsApp message event.
+    This runs on queue-specialized workers (llm/media).
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        return loop.run_until_complete(_process_payload(payload))
+        from app.api.whatsapp import _process_message_event
+
+        loop.run_until_complete(_process_message_event(event))
+        return {"status": "processed"}
     except Exception as exc:
-        logger.error(f"Task failed, retrying: {exc}", exc_info=True)
+        logger.error(f"Message task failed, retrying: {exc}", exc_info=True)
         raise self.retry(exc=exc)
     finally:
         loop.close()

@@ -1,2 +1,4 @@
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
-worker: celery -A app.worker.celery_app worker --loglevel=info --pool=solo --concurrency=1
+web: sh scripts/railway-start-web.sh
+worker-webhook-ingest: sh scripts/railway-start-worker.sh webhook_ingest
+worker-llm-reply: sh scripts/railway-start-worker.sh llm_reply
+worker-media: sh scripts/railway-start-worker.sh media
