@@ -1,15 +1,13 @@
 import base64
-import os
 import asyncio
 from email.message import EmailMessage
 from typing import Dict, Any
 
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.tools.base_tool import BaseTool
-from app.core.config import settings
+from app.tools.google.service_account_utils import get_service_account_credentials
 
 SCOPES = ['https://www.googleapis.com/auth/gmail.send']
 
@@ -32,11 +30,7 @@ class GmailTool(BaseTool):
         that merchant's Gmail address. This requires Google Workspace Domain-Wide Delegation.
         Otherwise, it sends as the service account itself (catalyst-bot@...).
         """
-        json_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
-        if not json_path or not os.path.exists(json_path):
-            raise ValueError(f"Google Service Account JSON missing at {json_path}.")
-
-        creds = service_account.Credentials.from_service_account_file(json_path, scopes=SCOPES)
+        creds = get_service_account_credentials(scopes=SCOPES)
         
         # If the business has granted Domain-Wide Delegation, impersonate their email
         if delegated_email:

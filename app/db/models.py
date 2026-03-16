@@ -80,6 +80,8 @@ class WhatsAppBotConfig(Base):
     slot_config_id = Column(UUID(as_uuid=True), ForeignKey("slot_configs.id"), nullable=True)
     google_calendar_token = Column(JSON, nullable=True) # Stores the OAuth token
     google_doc_id = Column(String, nullable=True) # Connects to "Catalyst AI - Knowledge Base" doc
+    google_sheet_id = Column(String, nullable=True) # Spreadsheet used by vertical tools
+    enabled_tools = Column(JSON, nullable=True)  # Stores tool toggle preferences from Settings UI: {"get_menu": true, "check_weather_and_suggest": false, ...}
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

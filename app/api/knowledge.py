@@ -4,7 +4,8 @@ from sqlalchemy.future import select
 from sqlalchemy import delete
 
 from app.db.base import get_db
-from app.db.models import WhatsAppBotConfig, KnowledgeChunk
+from app.db.models import WhatsAppBotConfig, KnowledgeChunk, User
+from app.api.deps import get_current_user
 from app.api.calendar import get_docs_service
 from app.services.rag_service import ingest_text
 
@@ -31,12 +32,21 @@ def read_structural_elements(elements):
     return text
 
 @router.post("/sync/{bot_config_id}")
-async def sync_knowledge_doc(bot_config_id: str, db: AsyncSession = Depends(get_db)):
+async def sync_knowledge_doc(
+    bot_config_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Downloads the user's connected Google Doc, wipes old knowledge from Google Docs,
     and ingests the new content into the RAG database.
     """
-    res = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == bot_config_id))
+    res = await db.execute(
+        select(WhatsAppBotConfig).filter(
+            WhatsAppBotConfig.id == bot_config_id,
+            WhatsAppBotConfig.user_id == current_user.id,
+        )
+    )
     config = res.scalar_one_or_none()
     
     if not config:

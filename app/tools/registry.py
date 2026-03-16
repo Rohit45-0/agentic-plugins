@@ -18,6 +18,79 @@ logger = logging.getLogger(__name__)
 #  OpenAI Function Schemas — one per tool method the AI can call
 # ═══════════════════════════════════════════════════════════════════════════
 
+# ──── Core Calendar Tools ───────────────────────────────────────────────────
+
+_CORE_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_available_slots",
+            "description": "Get available booking slots for a specific date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_date": {
+                        "type": "string",
+                        "description": "The date to check in YYYY-MM-DD format (e.g. 2026-03-02)."
+                    }
+                },
+                "required": ["target_date"],
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_slot",
+            "description": "Book a specific slot time. Use this ONLY after the customer has agreed to a specific available time.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date_time": {
+                        "type": "string",
+                        "description": "The full start date and time of the booking in YYYY-MM-DD HH:MM format (e.g. 2026-03-02 14:30)."
+                    }
+                },
+                "required": ["date_time"],
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_bookings",
+            "description": "Cancel all bookings for a specific customer phone number on a specific date. This will remove the events from Google Calendar.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_date": {
+                        "type": "string",
+                        "description": "The date to cancel bookings for in YYYY-MM-DD format (e.g. 2026-03-06)."
+                    }
+                },
+                "required": ["target_date"],
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_customer_bookings",
+            "description": "Check if this customer has any existing appointments already booked on a specific date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_date": {
+                        "type": "string",
+                        "description": "The date to check appointments for in YYYY-MM-DD format (e.g. 2026-03-06)."
+                    }
+                },
+                "required": ["target_date"],
+            },
+        }
+    }
+]
+
 # ──── Shared / Cross-Vertical Tools ────────────────────────────────────────
 
 _WEATHER_TOOL = {
@@ -337,16 +410,26 @@ VERTICAL_TOOLS: Dict[str, List[dict]] = {
     "kirana": _KIRANA_TOOLS,
     "coaching": _COACHING_TOOLS,
     "gym": _GYM_TOOLS,
+    "core": _CORE_TOOLS,
     "general": [],  # General uses only core calendar tools
 }
 
 
-def get_tools_for_vertical(use_case_type: str) -> List[dict]:
+def get_tools_for_vertical(use_case_type: str, enabled_tools: Optional[List[str]] = None) -> List[dict]:
     """
     Returns the OpenAI function schemas for a given vertical.
-    These get appended to the standard calendar tools in the WhatsApp handler.
+    If enabled_tools is provided, only tools whose function name is in that list are returned.
+    This allows the frontend toggle UI to control which tools the AI can use.
     """
-    return VERTICAL_TOOLS.get(use_case_type, [])
+    all_tools = VERTICAL_TOOLS.get(use_case_type, [])
+    
+    if enabled_tools is None:
+        return all_tools
+    
+    return [
+        tool for tool in all_tools
+        if tool.get("function", {}).get("name") in enabled_tools
+    ]
 
 
 # ═══════════════════════════════════════════════════════════════════════════

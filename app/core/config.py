@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Catalyst Nexus Plugins"
     API_V1_STR: str = "/api/v1"
     DEBUG: bool = False
-    SECRET_KEY: str = "catalyst-plugins-secret-key-change-in-production"
-    FERNET_KEY: str = "QP6wfrGXLXPI9D1wx6whvLs45dPR7hdDXscsFG-ZDYo=" # Optional defaults to dev key
+    SECRET_KEY: str
+    FERNET_KEY: str
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://localhost:5173",
@@ -38,13 +38,27 @@ class Settings(BaseSettings):
     WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
     WHATSAPP_ACCESS_TOKEN: Optional[str] = None
     WHATSAPP_APP_SECRET: Optional[str] = None
-    WHATSAPP_VERIFY_TOKEN: str = "catalyst_nexus_webhook_secret"
+    WHATSAPP_VERIFY_TOKEN: str
 
     # Owner phone number (used to distinguish admin from customer)
     OWNER_PHONE_NUMBER: Optional[str] = None
 
     # Inbox / escalation behavior
     ESCALATION_KEYWORDS: str = "human,agent,complaint,refund,cancel,angry,issue,problem"
+    RATE_LIMIT_MAX_MESSAGES: int = 10
+    RATE_LIMIT_WINDOW_SECONDS: int = 60
+    WEBHOOK_USE_CELERY: bool = True
+    CALENDAR_OAUTH_STATE_TTL_SECONDS: int = 900
+    INTERNAL_WEBHOOK_SECRET: Optional[str] = None
+    
+    # CRAG-lite retrieval correction
+    CRAG_ENABLED: bool = True
+    CRAG_HIGH_CONFIDENCE_THRESHOLD: float = 0.78
+    CRAG_LOW_CONFIDENCE_THRESHOLD: float = 0.58
+    CRAG_MAX_INTERNAL_CHUNKS: int = 8
+    CRAG_MAX_EXTERNAL_CHUNKS: int = 8
+    CRAG_MAX_REFINED_STRIPS: int = 10
+    CRAG_MIN_STRIP_SIMILARITY: float = 0.55
 
     # Celery & Redis Queue
     REDIS_URL: str
@@ -66,6 +80,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: Optional[str] = None
     GOOGLE_CLIENT_SECRET: Optional[str] = None
     GOOGLE_SERVICE_ACCOUNT_JSON_PATH: Optional[str] = None
+    GOOGLE_SERVICE_ACCOUNT_JSON: Optional[str] = None
     GOOGLE_MAPS_API_KEY: Optional[str] = None
 
     # Razorpay Payments

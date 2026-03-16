@@ -1,10 +1,24 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --app-bg: #06080f;
+    --app-bg-2: #0b1020;
+    --app-surface-1: #0f1523;
+    --app-surface-2: #141c2b;
+    --app-surface-3: #1a2538;
+    --app-border: rgba(148, 163, 184, 0.16);
+    --app-border-strong: rgba(148, 163, 184, 0.3);
+    --app-text: #f3f6fb;
+    --app-text-muted: #9aa8c3;
+    --app-accent: #33d1ff;
+    --app-accent-soft: rgba(51, 209, 255, 0.14);
+  }
+
   * {
     box-sizing: border-box;
     margin: 0;
@@ -12,13 +26,20 @@
   }
 
   html {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color-scheme: dark;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    @apply bg-white text-neutral-900;
+    background: var(--app-bg);
+    color: var(--app-text);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: "Sora", "Manrope", sans-serif;
+    letter-spacing: -0.015em;
   }
 
   ::-webkit-scrollbar {
@@ -40,6 +61,141 @@
 }
 
 @layer components {
+  .app-shell-base {
+    background:
+      radial-gradient(900px 500px at 16% -10%, rgba(51, 209, 255, 0.12), transparent 58%),
+      radial-gradient(900px 560px at 92% 0%, rgba(129, 140, 248, 0.12), transparent 55%),
+      linear-gradient(180deg, var(--app-bg-2) 0%, var(--app-bg) 100%);
+    color: var(--app-text);
+  }
+
+  .app-shell-bg {
+    background:
+      radial-gradient(1000px 520px at 12% -10%, rgba(51, 209, 255, 0.08), transparent 60%),
+      radial-gradient(1100px 580px at 90% -6%, rgba(129, 140, 248, 0.08), transparent 55%),
+      linear-gradient(180deg, rgba(14, 20, 33, 0.82) 0%, rgba(6, 8, 15, 0.95) 100%);
+  }
+
+  .surface-1 {
+    background: var(--app-surface-1);
+    border: 1px solid var(--app-border);
+    box-shadow: 0 14px 48px rgba(2, 6, 23, 0.38);
+  }
+
+  .surface-2 {
+    background: var(--app-surface-2);
+    border: 1px solid var(--app-border);
+  }
+
+  .surface-3 {
+    background: var(--app-surface-3);
+    border: 1px solid var(--app-border-strong);
+  }
+
+  .manager-page {
+    position: relative;
+    isolation: isolate;
+  }
+
+  .manager-page::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: radial-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    background-size: 24px 24px;
+    opacity: 0.15;
+    z-index: -1;
+  }
+
+  .manager-card {
+    @apply rounded-2xl p-6;
+    background: linear-gradient(180deg, rgba(16, 24, 39, 0.84) 0%, rgba(10, 15, 26, 0.88) 100%);
+    border: 1px solid var(--app-border);
+    box-shadow: 0 12px 36px rgba(2, 6, 23, 0.3);
+  }
+
+  .manager-card-strong {
+    @apply manager-card;
+    border-color: rgba(103, 232, 249, 0.24);
+    box-shadow: 0 18px 42px rgba(8, 47, 73, 0.28);
+  }
+
+  .manager-label {
+    color: var(--app-text-muted);
+    @apply text-xs uppercase font-semibold tracking-wider;
+  }
+
+  .manager-title {
+    @apply font-display text-lg font-semibold text-slate-50 tracking-tight;
+  }
+
+  .manager-subtitle {
+    @apply text-sm text-slate-300;
+  }
+
+  .manager-metric {
+    font-variant-numeric: tabular-nums;
+    @apply font-display text-3xl text-slate-100;
+  }
+
+  .manager-chip {
+    @apply inline-flex items-center gap-1 px-2.5 py-1 text-xs rounded-full border;
+    background: rgba(15, 23, 42, 0.7);
+    color: #cbd5e1;
+    border-color: rgba(148, 163, 184, 0.26);
+  }
+
+  .manager-input-dark {
+    @apply w-full rounded-xl px-3.5 py-3 text-sm;
+    background: rgba(2, 6, 23, 0.72);
+    border: 1px solid rgba(71, 85, 105, 0.68);
+    color: #e2e8f0;
+  }
+
+  .manager-input-dark::placeholder {
+    color: #64748b;
+  }
+
+  .manager-input-dark:focus {
+    outline: none;
+    border-color: rgba(56, 189, 248, 0.75);
+    box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.25);
+  }
+
+  .btn-primary-dark {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border;
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.32), rgba(59, 130, 246, 0.28));
+    color: #e0f2fe;
+    border-color: rgba(56, 189, 248, 0.45);
+    transition: background-color 120ms ease, transform 120ms ease, border-color 120ms ease;
+  }
+
+  .btn-primary-dark:hover {
+    background: linear-gradient(135deg, rgba(34, 211, 238, 0.42), rgba(59, 130, 246, 0.34));
+    border-color: rgba(125, 211, 252, 0.62);
+    transform: translateY(-1px);
+  }
+
+  .btn-primary-dark:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .btn-secondary-dark {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border;
+    background: rgba(15, 23, 42, 0.66);
+    color: #cbd5e1;
+    border-color: rgba(71, 85, 105, 0.6);
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+
+  .btn-secondary-dark:hover {
+    background: rgba(30, 41, 59, 0.78);
+    border-color: rgba(100, 116, 139, 0.75);
+    color: #f1f5f9;
+  }
 
   /* Sidebar icon button */
   .sidebar-icon-btn {
@@ -109,5 +265,14 @@
 
   .page-subtitle {
     @apply text-sm text-neutral-500 mt-0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

@@ -3,6 +3,7 @@ import axios from "axios";
 import { getCurrentUser, getAccessToken } from "../services/auth";
 import { Copy, Check, Clock, Calendar, CheckSquare, BarChart, TrendingUp, Sparkles, Store, Scissors, UtensilsCrossed, ShoppingCart, GraduationCap, Globe, BookOpen, RefreshCw, FileText, Zap, ArrowRight, ArrowLeft, Phone, Building2, MessageSquare, Stethoscope, QrCode, Settings, Plus, Trash2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
+import AIToolAccessPanel from "../components/AIToolAccessPanel";
 
 const PLUGINS_API = import.meta.env.VITE_PLUGINS_API_URL || "https://web-production-ba9e.up.railway.app";
 
@@ -163,6 +164,22 @@ export default function WhatsAppBotPage() {
         }
     };
 
+    const connectGoogleAccount = async () => {
+        try {
+            const res = await axios.get(`${PLUGINS_API}/api/v1/calendar/connect-url/${botConfig.id}`, {
+                headers: { 'Authorization': `Bearer ${getAccessToken()}` }
+            });
+            const authorizationUrl = res?.data?.authorization_url;
+            if (!authorizationUrl) {
+                throw new Error("Missing authorization URL");
+            }
+            window.open(authorizationUrl, "_blank");
+        } catch (err) {
+            console.error(err);
+            alert("Failed to start Google connection. Please login again and retry.");
+        }
+    };
+
     const updateUseCase = async (newUseCase) => {
         // Optimistic UI Update: change it visually instantly!
         const previousUseCase = botConfig.use_case_type;
@@ -198,10 +215,10 @@ export default function WhatsAppBotPage() {
     }, []);
 
     if (loading) return (
-        <div className="flex-1 flex items-center justify-center bg-black">
+        <div className="flex-1 flex items-center justify-center app-shell-bg">
             <div className="text-center">
-                <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-                <p className="text-neutral-400">Loading your dashboard...</p>
+                <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+                <p className="text-slate-300">Loading your dashboard…</p>
             </div>
         </div>
     );
@@ -210,13 +227,25 @@ export default function WhatsAppBotPage() {
     const selectedOpt = useCaseOptions.find(o => o.key === setupData.use_case_type);
 
     return (
-        <div className="flex-1 overflow-auto bg-black p-8">
+        <div className="manager-page bot-manager flex-1 overflow-auto app-shell-bg p-8">
             <div className="max-w-5xl mx-auto space-y-8">
 
                 {/* Header */}
-                <div>
-                    <h1 className="text-3xl font-light text-white mb-2">WhatsApp Bot Manager</h1>
-                    <p className="text-neutral-400">Configure your AI assistant, connect your calendar, and manage slots.</p>
+                <div className="manager-card-strong">
+                    <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+                        <div>
+                            <p className="manager-label mb-2">Bot Operations Console</p>
+                            <h1 className="font-display text-4xl font-semibold text-slate-50 mb-2 tracking-tight">WhatsApp Bot Manager</h1>
+                            <p className="manager-subtitle">Configure your AI assistant, connect your calendar, and manage slots.</p>
+                        </div>
+                        {botConfig && (
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <span className="manager-chip">Mode: Live</span>
+                                <span className="manager-chip">Business: {botConfig.business_display_name || "Configured"}</span>
+                                <span className="manager-chip">Use Case: {botConfig.use_case_type || "general"}</span>
+                            </div>
+                        )}
+                    </div>
                 </div>
 
                 {!botConfig ? (
@@ -445,41 +474,41 @@ export default function WhatsAppBotPage() {
                         {/* Top Analytics Banner */}
                         {analytics && (
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
-                                    <h3 className="text-neutral-400 text-sm font-medium mb-2 flex items-center gap-2">
+                                <div className="manager-card">
+                                    <h3 className="manager-label mb-2 flex items-center gap-2">
                                         <TrendingUp size={16} className="text-blue-400" />
                                         Total Footfalls / Users
                                     </h3>
-                                    <p className="text-3xl font-light text-white">{analytics.total_conversations}</p>
-                                    <p className="text-xs text-neutral-500 mt-2">Active WhatsApp Chats</p>
+                                    <p className="manager-metric">{analytics.total_conversations}</p>
+                                    <p className="text-xs text-slate-400 mt-2">Active WhatsApp Chats</p>
                                 </div>
-                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
-                                    <h3 className="text-neutral-400 text-sm font-medium mb-2 flex items-center gap-2">
+                                <div className="manager-card">
+                                    <h3 className="manager-label mb-2 flex items-center gap-2">
                                         <BarChart size={16} className="text-orange-400" />
                                         Peak Hours
                                     </h3>
                                     <div className="space-y-1 mt-2">
                                         {analytics.peak_hours.map((hourStr, i) => (
-                                            <p key={i} className="text-lg font-light text-white flex justify-between">
+                                            <p key={i} className="text-lg text-slate-100 flex justify-between" style={{ fontVariantNumeric: "tabular-nums" }}>
                                                 {hourStr.includes("(") ? (
                                                     <>
                                                         <span>{hourStr.split(' ')[0]} {hourStr.split(' ')[1]}</span>
-                                                        <span className="text-sm text-neutral-500">{hourStr.split('(')[1].replace(')', '')}</span>
+                                                        <span className="text-sm text-slate-400">{hourStr.split('(')[1].replace(')', '')}</span>
                                                     </>
                                                 ) : (
-                                                    <span className="text-sm text-neutral-500 italic">{hourStr}</span>
+                                                    <span className="text-sm text-slate-400 italic">{hourStr}</span>
                                                 )}
                                             </p>
                                         ))}
                                     </div>
                                 </div>
-                                <div className="bg-neutral-900/40 border border-[#8b5cf6]/30 rounded-2xl p-6 relative overflow-hidden group">
+                                <div className="manager-card relative overflow-hidden group border border-violet-400/25">
                                     <div className="absolute inset-0 bg-gradient-to-br from-[#8b5cf6]/10 to-transparent pointer-events-none" />
-                                    <h3 className="text-[#a78bfa] text-sm font-medium mb-3 flex items-center gap-2 relative z-10">
+                                    <h3 className="manager-label text-violet-300 mb-3 flex items-center gap-2 relative z-10">
                                         <Sparkles size={16} />
                                         AI Profile Insights
                                     </h3>
-                                    <p className="text-sm font-light text-neutral-300 leading-relaxed max-h-24 overflow-y-auto relative z-10">
+                                    <p className="text-sm text-slate-200 leading-relaxed max-h-24 overflow-y-auto relative z-10">
                                         {analytics.ai_summary}
                                     </p>
                                 </div>
@@ -487,12 +516,12 @@ export default function WhatsAppBotPage() {
                         )}
 
                         {/* Business Type Selector */}
-                        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
-                            <h2 className="text-lg font-medium text-white mb-1 flex items-center gap-2">
+                        <div className="manager-card">
+                            <h2 className="manager-title mb-1 flex items-center gap-2">
                                 <Store size={18} className="text-purple-400" />
                                 Business Type
                             </h2>
-                            <p className="text-sm text-neutral-400 mb-4">Select your business type. This changes the AI's personality and how it talks to your customers.</p>
+                            <p className="manager-subtitle mb-4">Select your business type. This changes the AI personality and how it talks to your customers.</p>
                             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
                                 {useCaseOptions.map(opt => {
                                     const Icon = opt.icon;
@@ -503,7 +532,7 @@ export default function WhatsAppBotPage() {
                                             onClick={() => updateUseCase(opt.key)}
                                             className={`flex flex-col items-center gap-2 p-4 rounded-xl border transition-all duration-200 ${isActive
                                                 ? `${opt.bg} ${opt.border} ring-1 ring-white/10`
-                                                : "bg-black border-neutral-800 hover:border-neutral-600 hover:bg-neutral-900"
+                                                : "bg-slate-950/80 border-slate-700/60 hover:border-slate-500/80 hover:bg-slate-900/85"
                                                 }`}
                                         >
                                             <Icon size={22} className={isActive ? opt.color : "text-neutral-500"} />
@@ -516,20 +545,22 @@ export default function WhatsAppBotPage() {
                             </div>
                         </div>
 
+                        <AIToolAccessPanel />
+
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
                             {/* Left Column: Calendar & Integrations */}
                             <div className="space-y-6">
 
                                 {/* Google Calendar Card */}
-                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+                                <div className="manager-card">
                                     <div className="flex justify-between items-start mb-6">
                                         <div>
-                                            <h2 className="text-lg font-medium text-white mb-1 flex items-center gap-2">
+                                            <h2 className="manager-title mb-1 flex items-center gap-2">
                                                 <Calendar size={18} className="text-blue-400" />
                                                 Integrations (Calendar & Docs)
                                             </h2>
-                                            <p className="text-sm text-neutral-400">Connect Google to manage bookings and your bot's training doc.</p>
+                                            <p className="manager-subtitle">Connect Google to manage bookings and your bot training doc.</p>
                                         </div>
                                     </div>
 
@@ -540,8 +571,8 @@ export default function WhatsAppBotPage() {
                                         </div>
                                     ) : (
                                         <button
-                                            onClick={() => window.open(`${PLUGINS_API}/api/v1/calendar/connect/${botConfig.id}`, '_blank')}
-                                            className="w-full flex justify-center items-center gap-2 px-4 py-3 bg-neutral-800 hover:bg-neutral-700 text-white rounded-xl transition-colors border border-neutral-700 mb-4"
+                                            onClick={connectGoogleAccount}
+                                            className="w-full btn-secondary-dark mb-4"
                                         >
                                             <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="Google" />
                                             Connect Google Account
@@ -552,14 +583,14 @@ export default function WhatsAppBotPage() {
                                     <div className="pt-6 border-t border-neutral-800">
                                         <div className="flex items-center gap-2 mb-4">
                                             <BookOpen size={18} className="text-purple-400" />
-                                            <span className="text-sm font-medium text-white">AI Knowledge Base</span>
+                                            <span className="text-sm font-medium text-slate-100">AI Knowledge Base</span>
                                         </div>
 
                                         {botConfig.google_doc_id ? (
                                             <div className="grid grid-cols-2 gap-3">
                                                 <button
                                                     onClick={() => window.open(`https://docs.google.com/document/d/${botConfig.google_doc_id}/edit`, '_blank')}
-                                                    className="flex justify-center items-center gap-2 px-3 py-2.5 bg-neutral-800 hover:bg-neutral-700 text-xs text-neutral-300 rounded-lg transition-colors border border-neutral-700"
+                                                    className="btn-secondary-dark !text-xs !py-2.5"
                                                 >
                                                     <FileText size={14} />
                                                     Edit Doc
@@ -567,7 +598,7 @@ export default function WhatsAppBotPage() {
                                                 <button
                                                     onClick={syncKnowledgeBase}
                                                     disabled={syncing}
-                                                    className={`flex justify-center items-center gap-2 px-3 py-2.5 rounded-lg text-xs transition-all ${syncing ? "bg-purple-500/20 text-purple-300 cursor-not-allowed" : "bg-purple-600 hover:bg-purple-500 text-white"
+                                                    className={`flex justify-center items-center gap-2 px-3 py-2.5 rounded-lg text-xs transition-all ${syncing ? "bg-cyan-500/20 text-cyan-200 cursor-not-allowed" : "btn-primary-dark"
                                                         }`}
                                                 >
                                                     <RefreshCw size={14} className={syncing ? "animate-spin" : ""} />
@@ -581,9 +612,9 @@ export default function WhatsAppBotPage() {
                                 </div>
 
                                 {/* WhatsApp Official Connection */}
-                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+                                <div className="manager-card">
                                     <div className="flex justify-between items-center mb-4">
-                                        <h2 className="text-lg font-medium text-white flex items-center gap-2">
+                                        <h2 className="manager-title flex items-center gap-2">
                                             <Zap size={18} className="text-green-400" />
                                             WhatsApp Connection
                                         </h2>
@@ -591,22 +622,22 @@ export default function WhatsAppBotPage() {
                                             <span className="px-2 py-0.5 bg-green-500/10 text-green-500 text-[10px] rounded border border-green-500/20 uppercase font-bold tracking-wider">Active</span>
                                             <button
                                                 onClick={startReconfigure}
-                                                className="text-neutral-400 hover:text-white transition-colors bg-neutral-800 hover:bg-neutral-700 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-2 border border-neutral-700 hover:border-neutral-600"
+                                                className="btn-secondary-dark !text-xs !py-1.5 !px-3"
                                             >
                                                 <Settings size={14} />
                                                 Reconfigure Bot
                                             </button>
                                         </div>
                                     </div>
-                                    <p className="text-sm text-neutral-400 mb-6">Your official number is connected via Meta Cloud API.</p>
+                                    <p className="manager-subtitle mb-6">Your official number is connected via Meta Cloud API.</p>
 
-                                    <div className="p-4 bg-black rounded-xl border border-neutral-800 space-y-3">
+                                    <div className="p-4 bg-slate-950/80 rounded-xl border border-slate-700/70 space-y-3">
                                         <div className="flex justify-between items-center text-xs">
-                                            <span className="text-neutral-500">Phone Number ID</span>
-                                            <span className="text-neutral-300 font-mono">{botConfig.phone_number_id}</span>
+                                            <span className="text-slate-400">Phone Number ID</span>
+                                            <span className="text-slate-200 font-mono">{botConfig.phone_number_id}</span>
                                         </div>
                                         <div className="flex justify-between items-center text-xs">
-                                            <span className="text-neutral-500">Status</span>
+                                            <span className="text-slate-400">Status</span>
                                             <span className="text-green-400 flex items-center gap-1">
                                                 <div className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" />
                                                 Live & Accepting Messages
@@ -616,12 +647,12 @@ export default function WhatsAppBotPage() {
                                 </div>
 
                                 {/* Share / Test Bot */}
-                                <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
+                                <div className="manager-card">
                                     <div className="flex items-center gap-2 mb-4">
                                         <QrCode size={18} className="text-white" />
-                                        <h2 className="text-lg font-medium text-white">Share Your Bot</h2>
+                                        <h2 className="manager-title">Share Your Bot</h2>
                                     </div>
-                                    <p className="text-sm text-neutral-400 mb-6">
+                                    <p className="manager-subtitle mb-6">
                                         Show this QR code to your clients on their visits, so they can scan it to instantly message your AI for their next booking or query.
                                     </p>
 
@@ -639,21 +670,22 @@ export default function WhatsAppBotPage() {
 
                                         {/* Number Copier */}
                                         <div className="flex-1 flex flex-col justify-center space-y-3 w-full">
-                                            <label className="text-xs text-neutral-500 uppercase tracking-wider font-semibold">Or share Direct Number</label>
-                                            <div className="flex bg-black border border-neutral-800 rounded-lg p-3 justify-between items-center group">
-                                                <code className="text-neutral-300 font-mono text-sm sm:text-base">+{botConfig.whatsapp_phone_number}</code>
+                                            <label className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Or share Direct Number</label>
+                                            <div className="flex bg-slate-950/90 border border-slate-700/70 rounded-lg p-3 justify-between items-center group">
+                                                <code className="text-slate-200 font-mono text-sm sm:text-base">+{botConfig.whatsapp_phone_number}</code>
                                                 <button
+                                                    aria-label="Copy WhatsApp number"
                                                     onClick={() => {
                                                         navigator.clipboard.writeText(`+${botConfig.whatsapp_phone_number}`);
                                                         setHasCopied(true);
                                                         setTimeout(() => setHasCopied(false), 2000);
                                                     }}
-                                                    className="text-neutral-500 hover:text-white transition-colors p-1"
+                                                    className="text-slate-500 hover:text-slate-100 transition-colors p-1"
                                                 >
                                                     {hasCopied ? <Check size={18} className="text-green-500" /> : <Copy size={18} />}
                                                 </button>
                                             </div>
-                                            <p className="text-[11px] text-neutral-500">
+                                            <p className="text-[11px] text-slate-400">
                                                 Test it yourself: Message this number to talk to your AI.
                                             </p>
                                         </div>
@@ -663,12 +695,12 @@ export default function WhatsAppBotPage() {
                             </div>
 
                             {/* Right Column: Slot Configurations */}
-                            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 flex flex-col">
-                                <h2 className="text-lg font-medium text-white mb-1 flex items-center gap-2">
+                            <div className="manager-card flex flex-col">
+                                <h2 className="manager-title mb-1 flex items-center gap-2">
                                     <Clock size={18} className="text-orange-400" />
                                     Slot Engine Rules
                                 </h2>
-                                <p className="text-sm text-neutral-400 mb-6">Define your mathematical working hours. AI will cross-reference this with your Google Calendar.</p>
+                                <p className="manager-subtitle mb-6">Define your mathematical working hours. AI cross-references this with your Google Calendar.</p>
 
                                 <div className="space-y-4 flex-1">
                                     <div className="grid grid-cols-2 gap-4">
@@ -678,7 +710,7 @@ export default function WhatsAppBotPage() {
                                                 type="number"
                                                 value={slots.slot_duration_minutes}
                                                 onChange={(e) => setSlots({ ...slots, slot_duration_minutes: parseInt(e.target.value) })}
-                                                className="w-full bg-black border border-neutral-800 rounded-lg p-3 text-white focus:border-neutral-500 outline-none"
+                                                className="manager-input-dark"
                                             />
                                         </div>
                                         <div>
@@ -687,7 +719,7 @@ export default function WhatsAppBotPage() {
                                                 type="number"
                                                 value={slots.max_capacity_per_slot}
                                                 onChange={(e) => setSlots({ ...slots, max_capacity_per_slot: parseInt(e.target.value) })}
-                                                className="w-full bg-black border border-neutral-800 rounded-lg p-3 text-white focus:border-neutral-500 outline-none"
+                                                className="manager-input-dark"
                                             />
                                         </div>
                                     </div>
@@ -709,7 +741,7 @@ export default function WhatsAppBotPage() {
                                                         });
                                                         setSlots({ ...slots, working_hours: newHours });
                                                     }}
-                                                    className="text-neutral-400 hover:text-white bg-neutral-800 hover:bg-neutral-700 p-1.5 px-3 rounded-lg transition-colors flex items-center gap-1.5 text-xs font-medium border border-neutral-700/50"
+                                                    className="btn-secondary-dark !text-xs !px-3 !py-1.5"
                                                 >
                                                     <Plus size={14} /> Add Time Block
                                                 </button>
@@ -734,7 +766,7 @@ export default function WhatsAppBotPage() {
                                                                     });
                                                                     setSlots({ ...slots, working_hours: newHours });
                                                                 }}
-                                                                className="w-full bg-black border border-neutral-700/50 hover:border-neutral-500 focus:border-neutral-400 rounded-md p-2.5 text-white text-sm font-medium text-center outline-none transition-all focus:ring-1 focus:ring-neutral-500"
+                                                                className="w-full bg-black border border-neutral-700/50 hover:border-neutral-500 focus:border-neutral-400 rounded-md p-2.5 text-white text-sm font-medium text-center outline-none transition-all focus:ring-1 focus:ring-cyan-500/40"
                                                             />
                                                             <span className="text-neutral-500 text-[10px] font-bold uppercase tracking-wider">To</span>
                                                             <input
@@ -748,9 +780,10 @@ export default function WhatsAppBotPage() {
                                                                     });
                                                                     setSlots({ ...slots, working_hours: newHours });
                                                                 }}
-                                                                className="w-full bg-black border border-neutral-700/50 hover:border-neutral-500 focus:border-neutral-400 rounded-md p-2.5 text-white text-sm font-medium text-center outline-none transition-all focus:ring-1 focus:ring-neutral-500"
+                                                                className="w-full bg-black border border-neutral-700/50 hover:border-neutral-500 focus:border-neutral-400 rounded-md p-2.5 text-white text-sm font-medium text-center outline-none transition-all focus:ring-1 focus:ring-cyan-500/40"
                                                             />
                                                             <button
+                                                                aria-label="Remove time block"
                                                                 onClick={() => {
                                                                     const newHours = { ...slots.working_hours };
                                                                     Object.keys(newHours).forEach(day => {
@@ -779,7 +812,7 @@ export default function WhatsAppBotPage() {
                                 <div className="pt-6 border-t border-neutral-800 mt-auto">
                                     <button
                                         onClick={saveSlotConfig}
-                                        className="w-full px-4 py-3 bg-white text-black font-medium rounded-xl hover:bg-neutral-200 transition-colors"
+                                        className="w-full btn-primary-dark !py-3"
                                     >
                                         Save Configuration
                                     </button>

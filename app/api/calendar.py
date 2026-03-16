@@ -1,5 +1,6 @@
 import os
-import datetime
+import time
+import uuid
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,14 +8,22 @@ from sqlalchemy.future import select
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from jose import jwt, JWTError
 
 from app.db.base import get_db
-from app.db.models import WhatsAppBotConfig
+from app.db.models import WhatsAppBotConfig, User
+from app.api.deps import get_current_user
 from app.core.config import settings
 import json
 from cryptography.fernet import Fernet
 
+
+STATE_ALGORITHM = "HS256"
+
+
 def _get_fernet():
+    if not settings.FERNET_KEY:
+        raise HTTPException(status_code=500, detail="FERNET_KEY is not configured.")
     key = settings.FERNET_KEY.encode('utf-8')
     return Fernet(key)
 
@@ -56,23 +65,94 @@ def _get_flow(redirect_uri: str):
     return flow
 
 
+def _build_callback_url(request: Request) -> str:
+    callback_url = str(request.url_for("calendar_callback"))
+    if "railway.app" in str(request.url):
+        callback_url = callback_url.replace("http://", "https://")
+    return callback_url
+
+
+def _encode_oauth_state(bot_config_id: str, user_id: str) -> str:
+    now_ts = int(time.time())
+    payload = {
+        "sub": "calendar_oauth",
+        "bot_config_id": bot_config_id,
+        "user_id": user_id,
+        "iat": now_ts,
+        "exp": now_ts + settings.CALENDAR_OAUTH_STATE_TTL_SECONDS,
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=STATE_ALGORITHM)
+
+
+def _decode_oauth_state(state_token: str) -> tuple[str, str]:
+    try:
+        payload = jwt.decode(state_token, settings.SECRET_KEY, algorithms=[STATE_ALGORITHM])
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+
+    if payload.get("sub") != "calendar_oauth":
+        raise HTTPException(status_code=400, detail="Invalid OAuth state payload")
+
+    bot_config_id = payload.get("bot_config_id")
+    user_id = payload.get("user_id")
+    if not bot_config_id or not user_id:
+        raise HTTPException(status_code=400, detail="Malformed OAuth state")
+    return bot_config_id, user_id
+
+
+async def _build_google_authorization_url(
+    db: AsyncSession, request: Request, bot_config_id: str, current_user: User
+) -> str:
+    try:
+        bot_uuid = uuid.UUID(bot_config_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid bot_config_id format")
+
+    res_bot = await db.execute(
+        select(WhatsAppBotConfig).filter(
+            WhatsAppBotConfig.id == bot_uuid,
+            WhatsAppBotConfig.user_id == current_user.id,
+        )
+    )
+    bot_config = res_bot.scalar_one_or_none()
+    if not bot_config:
+        raise HTTPException(status_code=404, detail="Bot config not found for this user")
+
+    callback_url = _build_callback_url(request)
+    flow = _get_flow(callback_url)
+    state_token = _encode_oauth_state(str(bot_config.id), str(current_user.id))
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        state=state_token,
+    )
+    return authorization_url
+
+
+@router.get("/connect-url/{bot_config_id}")
+async def get_connect_calendar_url(
+    bot_config_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    authorization_url = await _build_google_authorization_url(db, request, bot_config_id, current_user)
+    return {"authorization_url": authorization_url}
+
+
 @router.get("/connect/{bot_config_id}")
-async def connect_calendar(bot_config_id: str, request: Request):
+async def connect_calendar(
+    bot_config_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """
     Step 1: The merchant clicks 'Connect Google Calendar' on the dashboard.
     We redirect them to the Google Accounts consent screen.
     We pass their bot_config_id in the 'state' parameter so we know who they are when they return.
     """
-    callback_url = str(request.url_for("calendar_callback"))
-    if "railway.app" in str(request.url):
-        callback_url = callback_url.replace("http://", "https://")
-        
-    flow = _get_flow(callback_url)
-    authorization_url, state = flow.authorization_url(
-        access_type="offline", # Need offline access to get a refresh token
-        prompt="consent",      # Force consent screen to guarantee refresh token is given
-        state=bot_config_id    # Pass ID back and forth
-    )
+    authorization_url = await _build_google_authorization_url(db, request, bot_config_id, current_user)
     return RedirectResponse(url=authorization_url)
 
 
@@ -83,19 +163,30 @@ async def calendar_callback(request: Request, db: AsyncSession = Depends(get_db)
     We exchange the code for a permanent access/refresh token, and save it to the DB.
     """
     code = request.query_params.get("code")
-    state = request.query_params.get("state") # This is the bot_config_id
+    state = request.query_params.get("state")
     
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
-        
-    res_config = await db.execute(select(WhatsAppBotConfig).filter(WhatsAppBotConfig.id == state))
+    
+    bot_config_id, user_id = _decode_oauth_state(state)
+
+    try:
+        bot_uuid = uuid.UUID(bot_config_id)
+        user_uuid = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Malformed OAuth state IDs")
+
+    res_config = await db.execute(
+        select(WhatsAppBotConfig).filter(
+            WhatsAppBotConfig.id == bot_uuid,
+            WhatsAppBotConfig.user_id == user_uuid,
+        )
+    )
     config = res_config.scalar_one_or_none()
     if not config:
         raise HTTPException(status_code=404, detail="Bot config not found")
 
-    callback_url = str(request.url_for("calendar_callback"))
-    if "railway.app" in str(request.url):
-        callback_url = callback_url.replace("http://", "https://")
+    callback_url = _build_callback_url(request)
 
     flow = _get_flow(callback_url)
     try:

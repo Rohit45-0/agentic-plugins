@@ -23,12 +23,13 @@ function SidebarLink({ to, icon: Icon, label, end }) {
       to={to}
       end={end}
       title={label}
+      aria-label={label}
       className={({ isActive }) =>
         clsx(
           "flex items-center justify-center w-11 h-11 rounded-xl transition-all duration-100 cursor-pointer",
           isActive
-            ? "bg-emerald-900 text-emerald-100"
-            : "text-neutral-400 hover:bg-neutral-100 hover:text-neutral-900"
+            ? "bg-cyan-400/15 text-cyan-200 border border-cyan-300/20"
+            : "text-slate-400 hover:bg-slate-700/40 hover:text-slate-100"
         )
       }
     >
@@ -54,13 +55,18 @@ export default function AppShell({ onLogout }) {
   }, []);
 
   return (
-    <div className="flex h-screen bg-black overflow-hidden">
+    <div className="flex h-screen app-shell-base overflow-hidden">
       {/* Icon-only Sidebar */}
-      <aside className="flex flex-col items-center w-18 border-r border-neutral-900 bg-black py-4 gap-1 flex-shrink-0" style={{ width: '72px' }}>
+      <aside className="flex flex-col items-center w-18 border-r py-4 gap-1 flex-shrink-0 surface-1" style={{ width: "72px" }}>
         {/* Logo / Brand */}
-        <div className="flex items-center justify-center w-11 h-11 bg-emerald-500/10 border border-emerald-500/20 rounded-xl mb-3 cursor-pointer" onClick={() => navigate("/dashboard")}>
-          <Zap size={20} className="text-emerald-500" strokeWidth={2.5} />
-        </div>
+        <button
+          type="button"
+          aria-label="Open dashboard"
+          className="flex items-center justify-center w-11 h-11 rounded-xl mb-3 cursor-pointer surface-2"
+          onClick={() => navigate("/dashboard")}
+        >
+          <Zap size={20} className="text-cyan-300" strokeWidth={2.5} />
+        </button>
 
         {/* Nav Items */}
         <nav className="flex flex-col gap-0.5 flex-1 mt-4">
@@ -77,7 +83,8 @@ export default function AppShell({ onLogout }) {
           <button
             onClick={logout}
             title="Logout"
-            className="flex items-center justify-center w-11 h-11 rounded-xl text-neutral-500 hover:bg-red-500/10 hover:text-red-500 transition-all duration-100"
+            aria-label="Logout"
+            className="flex items-center justify-center w-11 h-11 rounded-xl text-slate-500 hover:bg-red-500/10 hover:text-red-300 transition-all duration-100"
           >
             <LogOut size={22} strokeWidth={1.75} />
           </button>
@@ -85,7 +92,7 @@ export default function AppShell({ onLogout }) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto bg-black">
+      <main className="flex-1 overflow-y-auto app-shell-bg">
         <Outlet />
       </main>
     </div>

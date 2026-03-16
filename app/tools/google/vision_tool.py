@@ -1,9 +1,8 @@
 import asyncio
-import os
 from typing import Dict, Any
 
 from app.tools.base_tool import BaseTool
-from app.core.config import settings
+from app.tools.google.service_account_utils import get_service_account_credentials
 
 class VisionTool(BaseTool):
     """
@@ -15,12 +14,6 @@ class VisionTool(BaseTool):
     @property
     def tool_name(self) -> str:
         return "VisionTool"
-
-    def _get_credentials_path(self) -> str:
-        json_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
-        if not json_path or not os.path.exists(json_path):
-            raise ValueError(f"Google Service Account JSON missing at {json_path}.")
-        return json_path
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         """Dispatcher for Vision/OCR actions."""
@@ -74,8 +67,7 @@ class VisionTool(BaseTool):
             return self._format_response(success=False, message="google-cloud-vision not installed.")
 
         # Mount the credentials explicitly so we don't rely on OS Environment Variables
-        creds_path = self._get_credentials_path()
-        credentials = service_account.Credentials.from_service_account_file(creds_path)
+        credentials = get_service_account_credentials()
         
         client = vision.ImageAnnotatorClient(credentials=credentials)
         image = vision.Image(content=image_bytes)

@@ -1,12 +1,10 @@
 import asyncio
-import os
 from typing import Dict, Any, List
 
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from app.tools.base_tool import BaseTool
-from app.core.config import settings
+from app.tools.google.service_account_utils import get_service_account_credentials
 
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
@@ -23,11 +21,7 @@ class GoogleSheetsTool(BaseTool):
 
     def _get_service(self):
         """Constructs and returns the Google Sheets API v4 service resource."""
-        json_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
-        if not json_path or not os.path.exists(json_path):
-            raise ValueError(f"Google Service Account JSON missing at {json_path}. Please configure GOOGLE_SERVICE_ACCOUNT_JSON_PATH.")
-
-        creds = service_account.Credentials.from_service_account_file(json_path, scopes=SCOPES)
+        creds = get_service_account_credentials(scopes=SCOPES)
         return build('sheets', 'v4', credentials=creds)
 
     async def execute(self, **kwargs) -> Dict[str, Any]:

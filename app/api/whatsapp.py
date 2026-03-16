@@ -11,14 +11,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import time
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
+import redis.asyncio as redis
 import structlog
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
@@ -41,28 +40,33 @@ from app.services import rag_service, whatsapp_service
 logger = structlog.get_logger(__name__)
 router = APIRouter()
 
-import time
-from collections import defaultdict
-from typing import Optional
-
 # Lazy LLM client
 _llm_client: Optional[AsyncOpenAI] = None
+_rate_limit_redis_client: Optional[redis.Redis] = None
 
-# Naive In-Memory Rate Limiting
-_rate_limits = defaultdict(list)
-RATE_LIMIT_MAX_MESSAGES = 10
-RATE_LIMIT_WINDOW_SECONDS = 60
 
-def _is_rate_limited(identifier: str) -> bool:
-    now = time.time()
-    # Prune old timestamps
-    _rate_limits[identifier] = [t for t in _rate_limits[identifier] if now - t < RATE_LIMIT_WINDOW_SECONDS]
-    
-    if len(_rate_limits[identifier]) >= RATE_LIMIT_MAX_MESSAGES:
-        return True
-        
-    _rate_limits[identifier].append(now)
-    return False
+def _get_rate_limit_redis_client() -> redis.Redis:
+    global _rate_limit_redis_client
+    if _rate_limit_redis_client is None:
+        redis_url = settings.REDIS_URL
+        if redis_url.startswith("rediss://") and "ssl_cert_reqs" not in redis_url:
+            separator = "&" if "?" in redis_url else "?"
+            redis_url = f"{redis_url}{separator}ssl_cert_reqs=none"
+        _rate_limit_redis_client = redis.from_url(redis_url, decode_responses=True)
+    return _rate_limit_redis_client
+
+
+async def _is_rate_limited(identifier: str) -> bool:
+    try:
+        client = _get_rate_limit_redis_client()
+        key = f"rate:whatsapp:{identifier}"
+        current_count = await client.incr(key)
+        if current_count == 1:
+            await client.expire(key, settings.RATE_LIMIT_WINDOW_SECONDS)
+        return current_count > settings.RATE_LIMIT_MAX_MESSAGES
+    except Exception as exc:
+        logger.warning("Redis rate-limit check failed; allowing request", error=str(exc))
+        return False
 
 
 class ManualModeUpdate(BaseModel):
@@ -83,6 +87,7 @@ class BotConfigUpsertRequest(BaseModel):
     owner_phone_number: Optional[str] = None
     whatsapp_phone_number: Optional[str] = None
     business_display_name: Optional[str] = None
+    google_sheet_id: Optional[str] = None
     use_case_type: str = "restaurant"
     is_active: bool = True
 
@@ -94,6 +99,11 @@ class SystemAlertRequest(BaseModel):
     video_url: Optional[str] = None
     image_url: Optional[str] = None
     message: Optional[str] = None
+
+
+class ToolPreferencesRequest(BaseModel):
+    """Payload from the Settings UI to save tool toggle preferences."""
+    enabled_tools: dict  # {"get_menu": true, "check_weather_and_suggest": false, ...}
 
 
 def _get_llm_client() -> AsyncOpenAI:
@@ -125,6 +135,67 @@ def _verify_meta_signature(raw_body: bytes, signature_header: Optional[str]) -> 
 
     if not hmac.compare_digest(expected, signature_header):
         raise HTTPException(status_code=403, detail="Webhook signature mismatch")
+
+
+def _verify_internal_webhook_secret(secret_header: Optional[str]) -> None:
+    if not settings.INTERNAL_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="Internal webhook secret is not configured")
+    if not secret_header:
+        raise HTTPException(status_code=403, detail="Missing internal webhook secret")
+    if not hmac.compare_digest(settings.INTERNAL_WEBHOOK_SECRET, secret_header):
+        raise HTTPException(status_code=403, detail="Invalid internal webhook secret")
+
+
+def _iter_payload_message_events(payload: dict):
+    """Yield normalized message events from a Meta webhook payload."""
+    for entry in payload.get("entry", []):
+        for change in entry.get("changes", []):
+            value = change.get("value", {})
+            metadata = value.get("metadata", {})
+            phone_number_id = metadata.get("phone_number_id") or settings.WHATSAPP_PHONE_NUMBER_ID
+            for msg in value.get("messages", []) or []:
+                yield {
+                    "phone_number_id": phone_number_id,
+                    "msg": msg,
+                }
+
+
+def _select_processing_queue(msg: dict) -> str:
+    """Route message handling to specialized queues by message type."""
+    msg_type = (msg or {}).get("type", "")
+    if msg_type in {"document", "image", "audio", "video", "sticker"}:
+        return "media"
+    if msg_type in {"text", "interactive", "button"}:
+        return "llm_reply"
+    return "webhook_ingest"
+
+
+async def _process_message_event(event: dict) -> None:
+    """Process exactly one inbound WhatsApp message event."""
+    phone_number_id = event.get("phone_number_id")
+    msg = event.get("msg") or {}
+
+    if not isinstance(msg, dict):
+        logger.warning("Skipping malformed message event payload")
+        return
+
+    async with AsyncSessionLocal() as db:
+        from_number = msg.get("from", "")
+        owner, config, owner_phone_number = await _resolve_owner_context(
+            db, phone_number_id, from_number=from_number
+        )
+        if owner is None:
+            logger.warning("No owner found for incoming message", from_number=from_number)
+            return
+
+        await _process_single_message(
+            db=db,
+            owner=owner,
+            config=config,
+            msg=msg,
+            owner_phone_number=owner_phone_number,
+            phone_number_id=phone_number_id,
+        )
 
 
 def _extract_text_from_message(msg: dict) -> str:
@@ -425,7 +496,7 @@ async def verify_webhook(
 
 
 @router.post("/webhook")
-async def handle_incoming(request: Request, background_tasks: BackgroundTasks):
+async def handle_incoming(request: Request):
     """Main listener. Meta POSTs here every time someone messages the bot."""
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
@@ -436,43 +507,26 @@ async def handle_incoming(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # Run processing directly in the background without Celery
-    background_tasks.add_task(_process_payload, payload)
-    
+    if settings.WEBHOOK_USE_CELERY:
+        try:
+            from app.worker import process_whatsapp_webhook
+            process_whatsapp_webhook.apply_async(kwargs={"payload": payload}, queue="webhook_ingest")
+        except Exception as exc:
+            logger.error("Failed to enqueue WhatsApp payload in Celery", error=str(exc), exc_info=True)
+            raise HTTPException(status_code=503, detail="Webhook queue unavailable")
+        return {"status": "queued"}
+
+    await _process_payload(payload)
     return {"status": "ok"}
 
 
 async def _process_payload(payload: dict):
-    """Parse Meta webhook payload and process all message events in the batch."""
-    async with AsyncSessionLocal() as db:
-        try:
-            for entry in payload.get("entry", []):
-                for change in entry.get("changes", []):
-                    value = change.get("value", {})
-                    metadata = value.get("metadata", {})
-                    phone_number_id = metadata.get("phone_number_id") or settings.WHATSAPP_PHONE_NUMBER_ID
-
-                    for msg in value.get("messages", []) or []:
-                        from_number = msg.get("from", "")
-                        # Resolve owner per-message so the right config is picked
-                        owner, config, owner_phone_number = await _resolve_owner_context(
-                            db, phone_number_id, from_number=from_number
-                        )
-                        if owner is None:
-                            logger.warning("No owner found for incoming message", from_number=from_number)
-                            continue
-
-                        await _process_single_message(
-                            db=db,
-                            owner=owner,
-                            config=config,
-                            msg=msg,
-                            owner_phone_number=owner_phone_number,
-                            phone_number_id=phone_number_id,
-                        )
-
-        except Exception as e:
-            logger.error(f"Error processing WhatsApp payload: {e}", exc_info=True)
+    """Parse Meta webhook payload and process all message events in-process."""
+    try:
+        for event in _iter_payload_message_events(payload):
+            await _process_message_event(event)
+    except Exception as e:
+        logger.error(f"Error processing WhatsApp payload: {e}", exc_info=True)
 
 
 async def _process_single_message(
@@ -492,7 +546,7 @@ async def _process_single_message(
         return
 
     # 1. Check Rate Limits (Protect OpenAI costs and DB spam)
-    if _is_rate_limited(f"customer:{from_number}"):
+    if await _is_rate_limited(f"customer:{from_number}"):
         logger.warning(f"Rate limit exceeded for customer phone: {from_number}")
         return
 
@@ -993,8 +1047,77 @@ async def _handle_customer_message(
     if not question:
         return
 
-    chunks = await rag_service.search_knowledge(db, question, owner.id, limit=5)
-    context = "\n".join([f"- {c.content}" for c in chunks]) if chunks else "No specific business context found."
+    rag_context_units = 0
+    retrieval_action = "legacy"
+    context = "No specific business context found."
+    chunks = []
+
+    try:
+        if settings.CRAG_ENABLED:
+            semantic_scored = await rag_service.search_knowledge_scored(
+                db=db,
+                query=question,
+                user_id=owner.id,
+                limit=settings.CRAG_MAX_INTERNAL_CHUNKS,
+            )
+            retrieval_eval = rag_service.evaluate_retrieval_action(
+                scored_chunks=semantic_scored,
+                high_threshold=settings.CRAG_HIGH_CONFIDENCE_THRESHOLD,
+                low_threshold=settings.CRAG_LOW_CONFIDENCE_THRESHOLD,
+            )
+            retrieval_action = retrieval_eval["action"]
+
+            chunks = [item["chunk"] for item in semantic_scored]
+            internal_refined = await rag_service.refine_chunks_for_query(
+                query=question,
+                chunks=chunks,
+                max_strips=settings.CRAG_MAX_REFINED_STRIPS,
+                min_similarity=settings.CRAG_MIN_STRIP_SIMILARITY,
+            )
+            final_strips = internal_refined
+
+            if retrieval_action in {"ambiguous", "incorrect"}:
+                rewritten = rag_service.rewrite_query_keywords(question)
+                lexical_chunks = await rag_service.search_knowledge_lexical(
+                    db=db,
+                    query=rewritten,
+                    user_id=owner.id,
+                    limit=settings.CRAG_MAX_EXTERNAL_CHUNKS,
+                )
+                external_refined = await rag_service.refine_chunks_for_query(
+                    query=question,
+                    chunks=lexical_chunks,
+                    max_strips=settings.CRAG_MAX_REFINED_STRIPS,
+                    min_similarity=settings.CRAG_MIN_STRIP_SIMILARITY,
+                )
+                final_strips = rag_service.merge_unique_strips(
+                    internal_refined,
+                    external_refined,
+                    max_items=settings.CRAG_MAX_REFINED_STRIPS,
+                )
+
+            rag_context_units = len(final_strips)
+            if final_strips:
+                context = "\n".join([f"- {strip}" for strip in final_strips])
+        else:
+            chunks = await rag_service.search_knowledge(db, question, owner.id, limit=5)
+            rag_context_units = len(chunks)
+            if chunks:
+                context = "\n".join([f"- {c.content}" for c in chunks])
+    except Exception as retrieval_err:
+        logger.warning("CRAG retrieval failed, using semantic fallback", error=str(retrieval_err))
+        chunks = await rag_service.search_knowledge(db, question, owner.id, limit=5)
+        rag_context_units = len(chunks)
+        retrieval_action = "fallback_semantic"
+        if chunks:
+            context = "\n".join([f"- {c.content}" for c in chunks])
+
+    logger.info(
+        "RAG retrieval decision",
+        user_id=str(owner.id),
+        action=retrieval_action,
+        context_units=rag_context_units,
+    )
 
     use_case = config.use_case_type if config else "general"
     
@@ -1076,80 +1199,18 @@ async def _handle_customer_message(
         f"=== BUSINESS KNOWLEDGE ===\n{context}\n=== END ==="
     )
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "check_available_slots",
-                "description": "Get available booking slots for a specific date.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target_date": {
-                            "type": "string",
-                            "description": "The date to check in YYYY-MM-DD format (e.g. 2026-03-02)."
-                        }
-                    },
-                    "required": ["target_date"],
-                },
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "book_slot",
-                "description": "Book a specific slot time. Use this ONLY after the customer has agreed to a specific available time.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "date_time": {
-                            "type": "string",
-                            "description": "The full start date and time of the booking in YYYY-MM-DD HH:MM format (e.g. 2026-03-02 14:30)."
-                        }
-                    },
-                    "required": ["date_time"],
-                },
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "cancel_bookings",
-                "description": "Cancel all bookings for a specific customer phone number on a specific date. This will remove the events from Google Calendar.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target_date": {
-                            "type": "string",
-                            "description": "The date to cancel bookings for in YYYY-MM-DD format (e.g. 2026-03-06)."
-                        }
-                    },
-                    "required": ["target_date"],
-                },
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "check_customer_bookings",
-                "description": "Check if this customer has any existing appointments already booked on a specific date.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target_date": {
-                            "type": "string",
-                            "description": "The date to check appointments for in YYYY-MM-DD format (e.g. 2026-03-06)."
-                        }
-                    },
-                    "required": ["target_date"],
-                },
-            }
-        }
-    ]
+    # Fetch enabled tool names from config
+    enabled_tool_names = None
+    if config and config.enabled_tools and isinstance(config.enabled_tools, dict):
+        enabled_tool_names = [k for k, v in config.enabled_tools.items() if v]
 
-    # ── Phase 5: Inject vertical-specific tools dynamically ──
     from app.tools.registry import get_tools_for_vertical
-    vertical_tool_schemas = get_tools_for_vertical(use_case)
+    
+    # 1. Fetch Core tools (filtered)
+    tools = get_tools_for_vertical("core", enabled_tools=enabled_tool_names)
+    
+    # 2. Fetch Vertical tools (filtered)
+    vertical_tool_schemas = get_tools_for_vertical(use_case, enabled_tools=enabled_tool_names)
     tools.extend(vertical_tool_schemas)
 
     # Fetch last 10 messages for context
@@ -1269,13 +1330,18 @@ async def _handle_customer_message(
                 else:
                     # Route to vertical tool executor (Phase 5)
                     from app.tools.registry import execute_vertical_tool
+                    sheet_id = None
+                    if config:
+                        # Use dedicated sheet field first. Fall back to legacy google_doc_id
+                        # to avoid breaking existing installs that stored Sheet ID there.
+                        sheet_id = getattr(config, "google_sheet_id", None) or getattr(config, "google_doc_id", None)
                     tool_result = await execute_vertical_tool(
                         use_case_type=use_case,
                         function_name=function_name,
                         function_args=function_args,
                         customer_phone=from_number,
                         customer_name=from_number,  # We use phone as name fallback
-                        spreadsheet_id=getattr(config, 'google_doc_id', None) if config else None,
+                        spreadsheet_id=sheet_id,
                         business_name=business_name,
                     )
                     
@@ -1311,7 +1377,7 @@ async def _handle_customer_message(
         is_ai_generated=True,
     )
 
-    should_escalate, reason, severity = _should_escalate(question, len(chunks), reply)
+    should_escalate, reason, severity = _should_escalate(question, rag_context_units, reply)
     if should_escalate and reason:
         await _create_escalation(
             db=db,
@@ -1591,6 +1657,7 @@ async def upsert_bot_config(
         existing.owner_phone_number = payload.owner_phone_number
         existing.whatsapp_phone_number = payload.whatsapp_phone_number
         existing.business_display_name = payload.business_display_name
+        existing.google_sheet_id = payload.google_sheet_id
         existing.use_case_type = payload.use_case_type
         existing.is_active = payload.is_active
         existing.updated_at = _utcnow()
@@ -1604,6 +1671,7 @@ async def upsert_bot_config(
             owner_phone_number=payload.owner_phone_number,
             whatsapp_phone_number=payload.whatsapp_phone_number,
             business_display_name=payload.business_display_name,
+            google_sheet_id=payload.google_sheet_id,
             use_case_type=payload.use_case_type,
             is_active=payload.is_active,
         )
@@ -1619,6 +1687,7 @@ async def upsert_bot_config(
             "owner_phone_number": cfg.owner_phone_number,
             "whatsapp_phone_number": cfg.whatsapp_phone_number,
             "business_display_name": cfg.business_display_name,
+            "google_sheet_id": cfg.google_sheet_id,
             "use_case_type": cfg.use_case_type,
             "is_active": cfg.is_active,
         }
@@ -1652,6 +1721,7 @@ async def get_bot_config(
             "use_case_type": config.use_case_type,
             "is_active": config.is_active,
             "google_doc_id": config.google_doc_id,
+            "google_sheet_id": config.google_sheet_id,
             "has_calendar": config.google_calendar_token is not None,
         }
     }
@@ -1681,19 +1751,94 @@ async def list_available_users(
     }
 
 
+@router.get("/tool-preferences")
+async def get_tool_preferences(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get the current user's tool toggle preferences."""
+    stmt = (
+        select(WhatsAppBotConfig)
+        .filter(WhatsAppBotConfig.user_id == current_user.id, WhatsAppBotConfig.is_active.is_(True))
+    )
+    res = await db.execute(stmt)
+    config = res.scalar_one_or_none()
+
+    if not config:
+        return {"data": {"enabled_tools": {}, "use_case_type": "general"}}
+
+    return {
+        "data": {
+            "enabled_tools": config.enabled_tools or {},
+            "use_case_type": config.use_case_type or "general",
+        }
+    }
+
+
+@router.put("/tool-preferences")
+async def update_tool_preferences(
+    payload: ToolPreferencesRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save tool toggle preferences from the Settings UI."""
+    stmt = (
+        select(WhatsAppBotConfig)
+        .filter(WhatsAppBotConfig.user_id == current_user.id, WhatsAppBotConfig.is_active.is_(True))
+    )
+    res = await db.execute(stmt)
+    config = res.scalar_one_or_none()
+
+    if not config:
+        raise HTTPException(status_code=404, detail="No active bot config found. Please set up your bot first.")
+
+    config.enabled_tools = payload.enabled_tools
+    config.updated_at = _utcnow()
+    await db.commit()
+    await db.refresh(config)
+
+    enabled_count = sum(1 for v in payload.enabled_tools.values() if v)
+    total_count = len(payload.enabled_tools)
+
+    return {
+        "status": "saved",
+        "enabled_count": enabled_count,
+        "total_count": total_count,
+    }
+
+
 @router.post("/system-alert")
 async def receive_system_alert(
     payload: SystemAlertRequest,
+    x_internal_secret: Optional[str] = Header(None, alias="X-Internal-Secret"),
     db: AsyncSession = Depends(get_db)
 ):
     """Internal webhook for core system to push generated content back to WhatsApp owner."""
     from app.services.whatsapp_service import send_text_message, send_media_message
-    
+    _verify_internal_webhook_secret(x_internal_secret)
+
+    try:
+        owner_id = UUID(payload.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+
+    res_cfg = await db.execute(
+        select(WhatsAppBotConfig).filter(
+            WhatsAppBotConfig.user_id == owner_id,
+            WhatsAppBotConfig.is_active.is_(True),
+        )
+    )
+    bot_config = res_cfg.scalar_one_or_none()
+    if not bot_config:
+        raise HTTPException(status_code=404, detail="Active bot config not found for user")
+
+    resolved_phone_number_id = payload.phone_number_id or bot_config.phone_number_id
+
     if payload.message:
         await send_text_message(
             to_number=payload.phone_number,
             message=payload.message,
-            phone_number_id=payload.phone_number_id
+            phone_number_id=resolved_phone_number_id
         )
         
     if payload.video_url:
@@ -1702,7 +1847,7 @@ async def receive_system_alert(
             media_url=payload.video_url,
             media_type="video",
             caption="🎥 Here is your generated video!",
-            phone_number_id=payload.phone_number_id
+            phone_number_id=resolved_phone_number_id
         )
     elif payload.image_url:
         await send_media_message(
@@ -1710,7 +1855,7 @@ async def receive_system_alert(
             media_url=payload.image_url,
             media_type="image",
             caption="🖼️ Here is your generated image/poster!",
-            phone_number_id=payload.phone_number_id
+            phone_number_id=resolved_phone_number_id
         )
         
     return {"status": "ok"}
