@@ -8,6 +8,32 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ── Persistent event loop for the worker process ──────────────────────────
+# Instead of creating/destroying an event loop per task (which corrupts
+# SQLAlchemy's async connection pool), we keep ONE loop alive for the
+# entire lifetime of the worker process.
+_worker_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_worker_loop() -> asyncio.AbstractEventLoop:
+    """Return the persistent worker event loop, creating it if needed."""
+    global _worker_loop
+    if _worker_loop is None or _worker_loop.is_closed():
+        if _worker_loop is not None and _worker_loop.is_closed():
+            # Loop was unexpectedly closed — also reset the DB engine so
+            # stale connections bound to the old loop are discarded.
+            logger.warning("Worker event loop was closed unexpectedly, recreating...")
+            try:
+                from app.db.base import engine
+                engine.sync_engine.dispose()
+            except Exception:
+                pass
+        _worker_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_worker_loop)
+        logger.info("[OK] Created persistent worker event loop")
+    return _worker_loop
+
+
 # Initialize Celery app
 celery_app = Celery("whatsapp_worker")
 
@@ -43,9 +69,12 @@ celery_app.conf.update(
 
 @worker_process_init.connect
 def on_worker_process_init(**kwargs):
+    """Initialize the persistent event loop and reset the DB engine for this process."""
     from app.db.base import engine
     engine.sync_engine.dispose()
-    logger.info("[OK] Reinitialized SQLAlchemy engine for the worker process")
+    # Pre-create the persistent loop so it's ready before the first task
+    _get_worker_loop()
+    logger.info("[OK] Reinitialized SQLAlchemy engine and event loop for worker process")
 
 
 @worker_ready.connect
@@ -93,9 +122,11 @@ def process_whatsapp_message(self, event: dict):
     """
     Process one inbound WhatsApp message event.
     This runs on queue-specialized workers (llm/media).
+
+    Uses a persistent event loop instead of creating/closing one per task,
+    which prevents SQLAlchemy async connection pool corruption.
     """
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    loop = _get_worker_loop()
     try:
         from app.api.whatsapp import _process_message_event
 
@@ -104,5 +135,5 @@ def process_whatsapp_message(self, event: dict):
     except Exception as exc:
         logger.error(f"Message task failed, retrying: {exc}", exc_info=True)
         raise self.retry(exc=exc)
-    finally:
-        loop.close()
+    # NOTE: We intentionally do NOT close the loop here.
+    # It stays alive for the next task, keeping DB connections valid.
